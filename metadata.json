@@ -1,0 +1,6 @@
+{
+  "name": "Eazzy AI Trading Signal Agent",
+  "description": "AI-powered multi-timeframe market analysis, strategy engine, signal journal, and performance tracking platform for Forex, Gold, and Indices.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
