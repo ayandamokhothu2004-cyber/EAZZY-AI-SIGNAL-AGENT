@@ -66,16 +66,27 @@ export const MarketWatch: React.FC<MarketWatchProps> = ({
   const btcQuote = quotes['BTC/USD'] || quotes['BTCUSD'];
   const btcSignal = signals['BTC/USD'] || signals['BTCUSD'];
 
-  const getStatusBadge = (status?: MarketDataStatus, isWeekend?: boolean) => {
+  const getStatusBadge = (quote?: MarketQuote | MarketPrice, isWeekend?: boolean) => {
+    const status = quote?.status;
+    const dataSource = quote?.dataSource || '';
+
+    if (status === 'DATA_CONFLICT') {
+      return (
+        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-400 border border-rose-500/30 flex items-center gap-1" title={quote?.errorMessage || 'Data conflict between providers'}>
+          <AlertTriangle className="w-2.5 h-2.5" />
+          DATA CONFLICT
+        </span>
+      );
+    }
     if (status === 'RATE_LIMITED') {
       return (
         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1">
           <AlertTriangle className="w-2.5 h-2.5" />
-          LIMIT REACHED
+          RATE LIMITED
         </span>
       );
     }
-    if (status === 'UNAVAILABLE') {
+    if (status === 'UNAVAILABLE' || (quote && quote.price === 0)) {
       return (
         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
           UNAVAILABLE
@@ -92,7 +103,7 @@ export const MarketWatch: React.FC<MarketWatchProps> = ({
     if (status === 'OFFLINE' || isWeekend) {
       return (
         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
-          OFFLINE
+          PROVIDER OFFLINE
         </span>
       );
     }
@@ -103,10 +114,18 @@ export const MarketWatch: React.FC<MarketWatchProps> = ({
         </span>
       );
     }
+    if (dataSource.includes('Finnhub')) {
+      return (
+        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+          LIVE — Finnhub (Failover)
+        </span>
+      );
+    }
     return (
       <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-        LIVE
+        LIVE — Twelve Data
       </span>
     );
   };
@@ -121,7 +140,7 @@ export const MarketWatch: React.FC<MarketWatchProps> = ({
             Market Watch & Real Data Feed
           </h2>
           <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-950 text-blue-400 border border-blue-800 font-mono">
-            Twelve Data Provider
+            Twelve Data (Primary) • Finnhub (Fallback)
           </span>
         </div>
 
@@ -171,7 +190,7 @@ export const MarketWatch: React.FC<MarketWatchProps> = ({
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-medium">
                   24/7 Market
                 </span>
-                {getStatusBadge(btcQuote.status)}
+                {getStatusBadge(btcQuote)}
               </div>
               <p className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-2">
                 <span>Source: {btcQuote.dataSource || 'Twelve Data Direct'}</span>
@@ -300,7 +319,7 @@ export const MarketWatch: React.FC<MarketWatchProps> = ({
               {/* Status Badge & Feed Metadata */}
               <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-xs">
                 <div className="flex items-center gap-1.5">
-                  {getStatusBadge(quote?.status, quote?.marketStatus === 'WEEKEND')}
+                  {getStatusBadge(quote, quote?.marketStatus === 'WEEKEND')}
                 </div>
 
                 <div className="text-right">

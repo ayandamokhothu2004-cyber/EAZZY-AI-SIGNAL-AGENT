@@ -43,6 +43,7 @@ export function createExpressApp(): express.Express {
       timestamp: Date.now(),
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
       twelveDataConfigured: Boolean(process.env.TWELVE_DATA_API_KEY),
+      finnhubConfigured: Boolean(process.env.FINNHUB_API_KEY),
       environment: process.env.NODE_ENV || 'production',
     });
   });
@@ -187,6 +188,27 @@ export function createExpressApp(): express.Express {
         tfCandlesMap
       );
 
+      // Explicitly attach current provider and closed candle data
+      baseSignal.provider = marketData.dataSource || instConfig.provider || 'Twelve Data';
+      baseSignal.dataSource = baseSignal.provider;
+
+      // Closed-candle verification log
+      const originatingCandle = entryCandles[entryCandles.length - 1];
+      const candleTimeStr = originatingCandle ? new Date(originatingCandle.time).toISOString() : 'N/A';
+      console.log(
+        `[SIGNAL AUDIT CREATION] ID: ${baseSignal.id} | Symbol: ${sym} | Dir: ${baseSignal.direction} | Strat: ${baseSignal.strategy} | TF: ${entryTF} | CandleTime: ${candleTimeStr} | ScanTime: ${new Date(baseSignal.scanTimestamp || Date.now()).toISOString()} | Entry: ${baseSignal.suggestedEntry} | SL: ${baseSignal.stopLoss} | TP1: ${baseSignal.takeProfit1} | RR: ${baseSignal.riskRewardRatio} | Conf: ${baseSignal.aiConfidence} | Provider: ${baseSignal.provider}`
+      );
+
+      // Market data provider consistency / conflict check
+      const consistency = marketDataManager.checkDataConsistency(sym);
+      if (consistency.conflict) {
+        baseSignal.direction = 'WAIT';
+        baseSignal.setupExplanation = `WAIT: Market data providers disagree (${consistency.reason}). Signal scan execution halted for capital protection.`;
+        baseSignal.conditionsDetected.push(
+          `Risk Filter: Market data provider conflict detected (Twelve Data vs Finnhub, diff: ${consistency.diffPercent?.toFixed(2)}%)`
+        );
+      }
+
       // Deep reasoning layer via Gemini
       const lastClose =
         entryCandles && entryCandles.length > 0
@@ -241,10 +263,11 @@ export function createExpressApp(): express.Express {
         }
       }
 
-      saveSignalToJournal(baseSignal);
+      // Save to journal with deduplication
+      const savedSignal = saveSignalToJournal(baseSignal);
 
       res.json({
-        signal: baseSignal,
+        signal: savedSignal,
         quote: marketData.quote,
         dataSource: marketData.dataSource,
       });
@@ -278,12 +301,15 @@ export function createExpressApp(): express.Express {
       const marketData = await fetchLiveMarketData(sym);
       const quote = marketData.quote;
 
-      const trackingResult = trackSignalsAgainstMarketData(
-        sym,
-        quote.price,
-        quote.high24h,
-        quote.low24h
-      );
+      // Track active signals using live quote tick (bid/ask executable sides, avoiding historical 24h look-behind)
+      const trackingResult = trackSignalsAgainstMarketData({
+        symbol: sym,
+        price: quote.price,
+        bid: quote.bid || quote.price,
+        ask: quote.ask || quote.price,
+        timestamp: quote.timestamp || Date.now(),
+        dataSource: quote.dataSource || marketData.dataSource || 'Twelve Data',
+      });
 
       const performance = calculatePerformanceAnalytics();
 
@@ -299,13 +325,25 @@ export function createExpressApp(): express.Express {
     }
   });
 
-  // Mount router on multiple standard prefixes for seamless compatibility across:
-  // 1. Direct local & Cloud Run dev server (/api/*)
-  // 2. Netlify redirect rewrites (/api/* or /.netlify/functions/api/*)
-  // 3. Function root invocations (/*)
+  // Mount router on API prefixes
   app.use('/api', router);
   app.use('/.netlify/functions/api', router);
-  app.use('/', router);
+
+  // Explicit JSON 404 handler for unmatched API routes to prevent falling through to Vite SPA HTML fallback
+  app.use('/api/*', (req, res) => {
+    res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.originalUrl}` });
+  });
+  app.use('/.netlify/functions/api/*', (req, res) => {
+    res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.originalUrl}` });
+  });
+
+  // Global Express error handler for API routes
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('Unhandled API error:', err);
+    res.status(err.status || 500).json({
+      error: err.message || 'Internal server error',
+    });
+  });
 
   return app;
 }

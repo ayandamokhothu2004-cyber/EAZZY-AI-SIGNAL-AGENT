@@ -11,25 +11,55 @@ import {
   ProviderStatusInfo,
 } from '../types';
 
+async function fetchJson<T>(url: string, options?: RequestInit, fallbackMessage = 'Request failed'): Promise<T> {
+  const res = await fetch(url, options);
+  const contentType = res.headers.get('content-type') || '';
+
+  if (!res.ok) {
+    let errorMsg = `${fallbackMessage} (${res.status})`;
+    if (contentType.includes('application/json')) {
+      try {
+        const json = await res.json();
+        errorMsg = json.error || json.message || errorMsg;
+      } catch {
+        // ignore json parse error on error responses
+      }
+    }
+    throw new Error(errorMsg);
+  }
+
+  if (!contentType.includes('application/json')) {
+    throw new Error(`Server returned non-JSON response (${res.status} ${res.statusText})`);
+  }
+
+  return res.json();
+}
+
 export const API = {
   async getInstruments(): Promise<InstrumentConfig[]> {
-    const res = await fetch('/api/instruments');
-    if (!res.ok) throw new Error('Failed to fetch instruments');
-    const data = await res.json();
-    return data.instruments;
+    const data = await fetchJson<{ instruments: InstrumentConfig[] }>(
+      '/api/instruments',
+      undefined,
+      'Failed to fetch instruments'
+    );
+    return data.instruments || [];
   },
 
   async getProviderStatus(): Promise<ProviderStatusInfo> {
-    const res = await fetch('/api/market/provider-status');
-    if (!res.ok) throw new Error('Failed to fetch provider status');
-    return res.json();
+    return fetchJson<ProviderStatusInfo>(
+      '/api/market/provider-status',
+      undefined,
+      'Failed to fetch provider status'
+    );
   },
 
   async getMarketOverview(): Promise<Record<string, MarketPrice>> {
-    const res = await fetch('/api/market/overview');
-    if (!res.ok) throw new Error('Failed to fetch market overview');
-    const data = await res.json();
-    return data.overview;
+    const data = await fetchJson<{ overview: Record<string, MarketPrice> }>(
+      '/api/market/overview',
+      undefined,
+      'Failed to fetch market overview'
+    );
+    return data.overview || {};
   },
 
   async getCryptoOverview(): Promise<{
@@ -38,15 +68,20 @@ export const API = {
     solana: MarketPrice;
     allCrypto: MarketPrice[];
   }> {
-    const res = await fetch('/api/market/crypto-overview');
-    if (!res.ok) throw new Error('Failed to fetch crypto overview');
-    return res.json();
+    return fetchJson<{
+      bitcoin: MarketPrice;
+      ethereum: MarketPrice;
+      solana: MarketPrice;
+      allCrypto: MarketPrice[];
+    }>('/api/market/crypto-overview', undefined, 'Failed to fetch crypto overview');
   },
 
   async getQuote(symbol: string): Promise<{ quote: MarketPrice | MarketQuote; dataSource: string }> {
-    const res = await fetch(`/api/market/quote/${encodeURIComponent(symbol)}`);
-    if (!res.ok) throw new Error(`Failed to fetch quote for ${symbol}`);
-    return res.json();
+    return fetchJson<{ quote: MarketPrice | MarketQuote; dataSource: string }>(
+      `/api/market/quote/${encodeURIComponent(symbol)}`,
+      undefined,
+      `Failed to fetch quote for ${symbol}`
+    );
   },
 
   async getCandles(
@@ -61,9 +96,19 @@ export const API = {
     status?: string;
     errorMessage?: string;
   }> {
-    const res = await fetch(`/api/market/candles/${encodeURIComponent(symbol)}?timeframe=${timeframe}`);
-    if (!res.ok) throw new Error(`Failed to fetch candles for ${symbol}`);
-    return res.json();
+    return fetchJson<{
+      symbol: string;
+      timeframe: Timeframe;
+      candles: MarketCandle[];
+      quote: MarketPrice | MarketQuote;
+      dataSource: string;
+      status?: string;
+      errorMessage?: string;
+    }>(
+      `/api/market/candles/${encodeURIComponent(symbol)}?timeframe=${timeframe}`,
+      undefined,
+      `Failed to fetch candles for ${symbol}`
+    );
   },
 
   async scanSignal(
@@ -71,25 +116,31 @@ export const API = {
     tradeType: TradeType,
     riskSettings?: RiskSettings
   ): Promise<{ signal: Signal; quote: MarketQuote; dataSource: string }> {
-    const res = await fetch('/api/signals/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol, tradeType, riskSettings }),
-    });
-    if (!res.ok) throw new Error('Failed to run signal scan');
-    return res.json();
+    return fetchJson<{ signal: Signal; quote: MarketQuote; dataSource: string }>(
+      '/api/signals/scan',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, tradeType, riskSettings }),
+      },
+      'Failed to run signal scan'
+    );
   },
 
   async getJournal(): Promise<{ signals: Signal[]; totalCount: number }> {
-    const res = await fetch('/api/signals/journal');
-    if (!res.ok) throw new Error('Failed to fetch signal journal');
-    return res.json();
+    return fetchJson<{ signals: Signal[]; totalCount: number }>(
+      '/api/signals/journal',
+      undefined,
+      'Failed to fetch signal journal'
+    );
   },
 
   async getPerformance(): Promise<PerformanceAnalytics> {
-    const res = await fetch('/api/performance');
-    if (!res.ok) throw new Error('Failed to fetch performance analytics');
-    return res.json();
+    return fetchJson<PerformanceAnalytics>(
+      '/api/performance',
+      undefined,
+      'Failed to fetch performance analytics'
+    );
   },
 
   async trackerTick(
@@ -100,12 +151,19 @@ export const API = {
     trackingResult: { updatedCount: number; statusChanges: any[] };
     performance: PerformanceAnalytics;
   }> {
-    const res = await fetch('/api/tracker/tick', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol }),
-    });
-    if (!res.ok) throw new Error('Tracker tick failed');
-    return res.json();
+    return fetchJson<{
+      symbol: string;
+      price: number;
+      trackingResult: { updatedCount: number; statusChanges: any[] };
+      performance: PerformanceAnalytics;
+    }>(
+      '/api/tracker/tick',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol }),
+      },
+      'Tracker tick failed'
+    );
   },
 };

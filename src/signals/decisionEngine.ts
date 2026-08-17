@@ -15,6 +15,83 @@ import {
   defaultNewsRiskProvider,
 } from '../strategies';
 
+export function computeSetupFingerprint(
+  instrument: string,
+  direction: SignalDirection,
+  primaryStrategy: string,
+  entryTimeframe: string,
+  candleTimestamp: number,
+  entryZone?: { low: number; high: number } | number
+): string {
+  const normSym = instrument.replace(/[/_ -]/g, '').toUpperCase();
+  let zoneKey = '0';
+  if (typeof entryZone === 'number') {
+    zoneKey = entryZone.toFixed(4);
+  } else if (entryZone && typeof entryZone.low === 'number' && typeof entryZone.high === 'number') {
+    zoneKey = `${entryZone.low.toFixed(4)}-${entryZone.high.toFixed(4)}`;
+  }
+  return `${normSym}:${direction}:${primaryStrategy}:${entryTimeframe}:${candleTimestamp}:${zoneKey}`;
+}
+
+export function validateSLTPGeometry(
+  directionOrOpts: 'BUY' | 'SELL' | { direction: 'BUY' | 'SELL'; entry: number; stopLoss: number; takeProfit1: number; pipSize?: number },
+  entryParam?: number,
+  stopLossParam?: number,
+  takeProfit1Param?: number
+): { valid: boolean; reason?: string; stopLoss: number; takeProfit1: number; entry: number; riskRewardRatio: number } {
+  let direction: 'BUY' | 'SELL';
+  let entry: number;
+  let stopLoss: number;
+  let takeProfit1: number;
+  let pipSize = 0.0001;
+
+  if (typeof directionOrOpts === 'object') {
+    direction = directionOrOpts.direction;
+    entry = directionOrOpts.entry;
+    stopLoss = directionOrOpts.stopLoss;
+    takeProfit1 = directionOrOpts.takeProfit1;
+    if (directionOrOpts.pipSize) pipSize = directionOrOpts.pipSize;
+  } else {
+    direction = directionOrOpts;
+    entry = entryParam || 0;
+    stopLoss = stopLossParam || 0;
+    takeProfit1 = takeProfit1Param || 0;
+  }
+
+  let valid = true;
+  let reason: string | undefined;
+
+  if (direction === 'BUY') {
+    if (stopLoss >= entry) {
+      valid = false;
+      reason = `Invalid BUY geometry: Stop Loss (${stopLoss}) must be below Entry (${entry}). Auto-correcting.`;
+      stopLoss = entry - 20 * pipSize;
+    }
+    if (takeProfit1 <= entry) {
+      valid = false;
+      reason = `Invalid BUY geometry: Take Profit (${takeProfit1}) must be above Entry (${entry}). Auto-correcting.`;
+      takeProfit1 = entry + Math.abs(entry - stopLoss) * 2;
+    }
+  } else if (direction === 'SELL') {
+    if (stopLoss <= entry) {
+      valid = false;
+      reason = `Invalid SELL geometry: Stop Loss (${stopLoss}) must be above Entry (${entry}). Auto-correcting.`;
+      stopLoss = entry + 20 * pipSize;
+    }
+    if (takeProfit1 >= entry) {
+      valid = false;
+      reason = `Invalid SELL geometry: Take Profit (${takeProfit1}) must be below Entry (${entry}). Auto-correcting.`;
+      takeProfit1 = entry - Math.abs(entry - stopLoss) * 2;
+    }
+  }
+
+  const riskDist = Math.abs(entry - stopLoss);
+  const rewardDist = Math.abs(takeProfit1 - entry);
+  const riskRewardRatio = riskDist > 0 ? Number((rewardDist / riskDist).toFixed(2)) : 2.0;
+
+  return { valid, reason, stopLoss, takeProfit1, entry, riskRewardRatio };
+}
+
 export function calculateEntrySLTP(
   instrument: InstrumentConfig,
   direction: 'BUY' | 'SELL',
@@ -307,6 +384,15 @@ export function generateSignalDecision(
       riskSettings.minRiskReward
     );
 
+    // Rule: Validate geometric validity (BUY: SL < Entry < TP; SELL: TP < Entry < SL)
+    const geomCheck = validateSLTPGeometry(direction, entryCalc.suggestedEntry, entryCalc.stopLoss, entryCalc.takeProfit1);
+    if (!geomCheck.valid) {
+      direction = 'WAIT';
+      const geomRejection = `Rejected by Risk Engine: ${geomCheck.reason}`;
+      detectedConditionNames.push(geomRejection);
+      reasons.push(geomRejection);
+    }
+
     // Rule: Filter out signals where R:R < minRR
     if (entryCalc.riskRewardRatio < riskSettings.minRiskReward) {
       direction = 'WAIT';
@@ -327,7 +413,10 @@ export function generateSignalDecision(
     reasons.push(confRejection);
   }
 
-  // 6. Assemble Final Reasons
+  // 6. Primary Strategy Identification & Assemble Final Reasons
+  const validStrategy = report.strategyResults.find((s) => s.valid && s.direction === direction);
+  const primaryStrategy = validStrategy ? validStrategy.strategyName : 'TREND_FOLLOWING';
+
   for (const s of report.strategyResults) {
     if (s.valid && s.direction === direction) {
       reasons.push(`[${s.strategyName}] ${s.reason}`);
@@ -357,6 +446,19 @@ export function generateSignalDecision(
   }
 
   const newsRisk = defaultNewsRiskProvider.getNewsRisk(instrument.symbol);
+  const now = Date.now();
+  const originatingCandle = entryCandles[entryCandles.length - 1];
+  const candleTimestamp = originatingCandle ? originatingCandle.time : now;
+  const provider = instrument.provider || 'Twelve Data';
+
+  const setupFingerprint = computeSetupFingerprint(
+    instrument.symbol,
+    direction,
+    primaryStrategy,
+    entryTF,
+    candleTimestamp,
+    entryCalc.entryZone
+  );
 
   return {
     id: signalId,
@@ -367,6 +469,15 @@ export function generateSignalDecision(
     direction,
     tradeType,
     timeframe: entryTF,
+    strategy: primaryStrategy,
+    candleTimestamp,
+    scanTimestamp: now,
+    timestamp: now,
+    createdAt: now,
+    provider,
+    dataSource: provider,
+    marketPriceAtCreation: Number(currentPrice.toFixed(instrument.digits)),
+    setupFingerprint,
     currentPrice: Number(currentPrice.toFixed(instrument.digits)),
     suggestedEntry: entryCalc.suggestedEntry,
     entry: entryCalc.suggestedEntry,
@@ -384,13 +495,11 @@ export function generateSignalDecision(
     strategyResults: report.strategyResults,
     confluence,
     reasons,
-    timestamp: Date.now(),
-    createdAt: Date.now(),
     setupExplanation: aiExplanationOverride?.explanation || defaultExplanation,
     conditionsDetected: detectedConditionNames.length > 0 ? detectedConditionNames : ['Consolidation / Low Confluence'],
     invalidationCondition: aiExplanationOverride?.invalidation || entryCalc.invalidationCondition,
     invalidation: aiExplanationOverride?.invalidation || entryCalc.invalidationCondition,
-    status: 'ACTIVE',
+    status: direction === 'WAIT' ? 'INVALIDATED' : 'ACTIVE',
     timeframeUsed: {
       context: contextTF,
       entry: entryTF,

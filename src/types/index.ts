@@ -4,7 +4,16 @@ export type TradeType = 'SCALP' | 'DAY' | 'SWING';
 
 export type SignalDirection = 'BUY' | 'SELL' | 'WAIT';
 
-export type SignalStatus = 'ACTIVE' | 'TP1_HIT' | 'TP2_HIT' | 'SL_HIT' | 'INVALIDATED' | 'EXPIRED';
+export type SignalStatus =
+  | 'ACTIVE'
+  | 'TP1_HIT'
+  | 'TP2_HIT'
+  | 'TP_HIT'
+  | 'SL_HIT'
+  | 'AMBIGUOUS'
+  | 'INVALIDATED'
+  | 'EXPIRED'
+  | 'CANCELLED';
 
 export type MarketBias = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
 
@@ -17,6 +26,7 @@ export type MarketDataStatus =
   | 'ERROR'
   | 'UNAVAILABLE'
   | 'RATE_LIMITED'
+  | 'DATA_CONFLICT'
   | 'TEST_DATA';
 
 export type MarketRegimeType =
@@ -218,6 +228,38 @@ export interface MarketPrice {
   isTest?: boolean;
 }
 
+export interface SingleProviderStatus {
+  name: string;
+  configured: boolean;
+  status: 'ONLINE' | 'RATE_LIMITED' | 'DEGRADED' | 'UNCONFIGURED' | 'ERROR' | 'OFFLINE';
+  message?: string;
+  lastSuccess?: number;
+  lastError?: string;
+  lastChecked: number;
+  rateLimitStats?: {
+    minuteRequests: number;
+    minuteLimit: number;
+    dailyRequests: number;
+    dailyLimit: number;
+    isLimitReached: boolean;
+  };
+}
+
+export interface InstrumentProviderHealth {
+  symbol: string;
+  primary: string;
+  secondary: string;
+  activeProvider: string;
+  status: 'LIVE' | 'FAILOVER' | 'DATA_CONFLICT' | 'UNAVAILABLE' | 'OFFLINE' | 'RATE_LIMITED';
+  reason?: string;
+  twelveDataPrice?: number;
+  finnhubPrice?: number;
+  priceDifference?: number;
+  priceDifferencePercent?: number;
+  dataAgreement?: 'HIGH' | 'MODERATE' | 'DATA_CONFLICT';
+  lastChecked?: number;
+}
+
 export interface ProviderStatusInfo {
   provider: string;
   configured: boolean;
@@ -231,6 +273,10 @@ export interface ProviderStatusInfo {
     dailyLimit: number;
     isLimitReached: boolean;
   };
+  primary?: SingleProviderStatus;
+  secondary?: SingleProviderStatus;
+  activeProvider?: string;
+  instruments?: Record<string, InstrumentProviderHealth>;
 }
 
 export interface IndicatorData {
@@ -323,6 +369,16 @@ export interface ConfidenceFactor {
   detail: string;
 }
 
+export interface SignalEvaluationLogEntry {
+  timestamp: number;
+  price: number;
+  bid?: number;
+  ask?: number;
+  state: SignalStatus;
+  provider?: string;
+  reason?: string;
+}
+
 export interface Signal {
   id: string;
   signalId?: string; // alias for id
@@ -332,6 +388,13 @@ export interface Signal {
   direction: SignalDirection;
   tradeType: TradeType;
   timeframe?: Timeframe;
+  strategy?: StrategyName | string;
+  candleTimestamp?: number; // Originating closed candle timestamp
+  scanTimestamp?: number; // Scan execution timestamp
+  provider?: string; // Data provider at creation
+  dataSource?: string; // Data provider alias
+  marketPriceAtCreation?: number;
+  setupFingerprint?: string; // Deterministic setup fingerprint for deduplication
   currentPrice: number;
   suggestedEntry: number;
   entry?: number; // alias for suggestedEntry
@@ -358,6 +421,11 @@ export interface Signal {
   status: SignalStatus;
   outcomeR?: number; // realized gain/loss in R-multiples (e.g. +2.0, -1.0)
   closedAt?: number;
+  closedPrice?: number;
+  closedByProvider?: string;
+  closedReason?: string;
+  isSimulated?: boolean;
+  isHistoricalSeed?: boolean;
   timeframeUsed: {
     context: Timeframe;
     entry: Timeframe;
@@ -377,6 +445,7 @@ export interface Signal {
   highestPriceReached?: number;
   lowestPriceReached?: number;
   newsRisk?: NewsRiskInfo;
+  evaluationLog?: SignalEvaluationLogEntry[];
 }
 
 export interface RiskSettings {
@@ -393,6 +462,9 @@ export interface PerformanceGroup {
   total: number;
   wins: number;
   losses: number;
+  ambiguous?: number;
+  expired?: number;
+  cancelled?: number;
   invalidated: number;
   winRate: number; // 0-100
   totalR: number;
@@ -401,14 +473,20 @@ export interface PerformanceGroup {
 
 export interface PerformanceAnalytics {
   totalSignals: number;
+  totalUniqueSignals: number;
   activeSignals: number;
   completedSignals: number;
   wins: number;
   losses: number;
+  ambiguous: number;
+  expired: number;
+  cancelled: number;
   winRate: number;
   totalR: number;
   averageR: number;
   profitFactor: number;
+  averageConfidence: number;
+  averageRiskReward: number;
   bestInstrument: string;
   worstInstrument: string;
   bestStrategy: string;

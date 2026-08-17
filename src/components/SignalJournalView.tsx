@@ -28,9 +28,11 @@ export const SignalJournalView: React.FC<SignalJournalViewProps> = ({ signals, o
   const filtered = signals.filter((sig) => {
     if (filterSymbol !== 'ALL' && sig.instrument !== filterSymbol) return false;
     if (filterStatus === 'ACTIVE' && sig.status !== 'ACTIVE') return false;
-    if (filterStatus === 'WINS' && sig.status !== 'TP1_HIT' && sig.status !== 'TP2_HIT') return false;
+    if (filterStatus === 'WINS' && sig.status !== 'TP1_HIT' && sig.status !== 'TP2_HIT' && sig.status !== 'TP_HIT') return false;
     if (filterStatus === 'LOSSES' && sig.status !== 'SL_HIT') return false;
-    if (filterStatus === 'INVALIDATED' && sig.status !== 'INVALIDATED') return false;
+    if (filterStatus === 'AMBIGUOUS' && sig.status !== 'AMBIGUOUS') return false;
+    if (filterStatus === 'EXPIRED' && sig.status !== 'EXPIRED') return false;
+    if (filterStatus === 'INVALIDATED' && sig.status !== 'INVALIDATED' && sig.status !== 'CANCELLED') return false;
     if (searchTerm && !sig.id.toLowerCase().includes(searchTerm.toLowerCase()) && !sig.setupExplanation.toLowerCase().includes(searchTerm.toLowerCase())) {
       return false;
     }
@@ -47,6 +49,7 @@ export const SignalJournalView: React.FC<SignalJournalViewProps> = ({ signals, o
           </span>
         );
       case 'TP1_HIT':
+      case 'TP_HIT':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
             <CheckCircle2 className="w-3 h-3" />
@@ -67,10 +70,24 @@ export const SignalJournalView: React.FC<SignalJournalViewProps> = ({ signals, o
             SL HIT (-1.0R)
           </span>
         );
+      case 'AMBIGUOUS':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+            <Clock className="w-3 h-3" />
+            AMBIGUOUS (0.0R)
+          </span>
+        );
+      case 'EXPIRED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700">
+            EXPIRED
+          </span>
+        );
+      case 'CANCELLED':
       case 'INVALIDATED':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-bold bg-slate-800/80 text-slate-400 border border-slate-700/80">
-            INVALIDATED
+            {status}
           </span>
         );
       default:
@@ -138,7 +155,9 @@ export const SignalJournalView: React.FC<SignalJournalViewProps> = ({ signals, o
             <option value="ACTIVE">Active Only</option>
             <option value="WINS">Wins (TP Hit)</option>
             <option value="LOSSES">Losses (SL Hit)</option>
-            <option value="INVALIDATED">Invalidated</option>
+            <option value="AMBIGUOUS">Ambiguous</option>
+            <option value="EXPIRED">Expired</option>
+            <option value="INVALIDATED">Invalidated / Cancelled</option>
           </select>
         </div>
       </div>
@@ -150,7 +169,7 @@ export const SignalJournalView: React.FC<SignalJournalViewProps> = ({ signals, o
             <tr className="bg-slate-950 text-slate-500 border-b border-slate-800 uppercase tracking-widest text-[10px] font-bold">
               <th className="py-2.5 px-3">Signal ID & Time</th>
               <th className="py-2.5 px-3">Instrument</th>
-              <th className="py-2.5 px-3">Direction</th>
+              <th className="py-2.5 px-3">Direction & Strat</th>
               <th className="py-2.5 px-3">Style</th>
               <th className="py-2.5 px-3">Entry</th>
               <th className="py-2.5 px-3">SL</th>
@@ -179,17 +198,27 @@ export const SignalJournalView: React.FC<SignalJournalViewProps> = ({ signals, o
                       {sig.id}
                     </div>
                     <div className="text-[10px] text-slate-500">
-                      {new Date(sig.timestamp).toLocaleString([], {
+                      {new Date(sig.timestamp || sig.createdAt || Date.now()).toLocaleString([], {
                         month: 'short',
                         day: 'numeric',
                         hour: '2-digit',
                         minute: '2-digit',
                       })}
                     </div>
+                    {sig.provider && (
+                      <div className="text-[9px] text-blue-400/80 font-mono">
+                        {sig.provider}
+                      </div>
+                    )}
                   </td>
 
                   <td className="py-3 px-3 font-bold text-slate-200">
-                    {sig.instrument}
+                    <div>{sig.instrument}</div>
+                    {sig.candleTimestamp && (
+                      <div className="text-[9px] text-slate-500 font-mono font-normal">
+                        Candle: {new Date(sig.candleTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                    )}
                   </td>
 
                   <td className="py-3 px-3">
@@ -204,6 +233,11 @@ export const SignalJournalView: React.FC<SignalJournalViewProps> = ({ signals, o
                     >
                       {sig.direction}
                     </span>
+                    {sig.strategy && (
+                      <div className="text-[9px] text-slate-400 font-mono mt-0.5 truncate max-w-[100px]">
+                        {sig.strategy}
+                      </div>
+                    )}
                   </td>
 
                   <td className="py-3 px-3 font-medium text-slate-400">
