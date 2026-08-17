@@ -176,6 +176,8 @@ export interface MarketCandle {
   symbol?: string;
   timeframe?: Timeframe;
   source?: string;
+  timestamp?: number;
+  datetime?: string;
 }
 
 export interface MarketQuote {
@@ -449,4 +451,7 @@ export interface NotificationItem {
   signalId?: string;
   instrument?: string;
 }
+
+export * from './backtest';
+
 

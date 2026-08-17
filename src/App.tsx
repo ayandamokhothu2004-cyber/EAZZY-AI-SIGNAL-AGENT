@@ -6,6 +6,7 @@ import { ActiveSignalsFeed } from './components/ActiveSignalsFeed';
 import { MarketAnalysisView } from './components/MarketAnalysisView';
 import { SignalJournalView } from './components/SignalJournalView';
 import { PerformanceDashboard } from './components/PerformanceDashboard';
+import { BacktestView } from './components/BacktestView';
 import { RiskSettingsModal } from './components/RiskSettingsModal';
 import { AddInstrumentModal } from './components/AddInstrumentModal';
 import { NotificationsDrawer } from './components/NotificationsDrawer';
@@ -35,7 +36,7 @@ const defaultRiskSettings: RiskSettings = {
 
 export function App() {
   // Navigation & View
-  const [activeView, setActiveView] = useState<'TERMINAL' | 'ANALYSIS' | 'JOURNAL' | 'PERFORMANCE'>('TERMINAL');
+  const [activeView, setActiveView] = useState<'TERMINAL' | 'ANALYSIS' | 'JOURNAL' | 'PERFORMANCE' | 'BACKTEST'>('TERMINAL');
 
   // Instruments & Market state
   const [instruments, setInstruments] = useState<InstrumentConfig[]>([]);
@@ -381,6 +382,25 @@ export function App() {
 
         {activeView === 'PERFORMANCE' && (
           <PerformanceDashboard performance={performance} />
+        )}
+
+        {activeView === 'BACKTEST' && (
+          <BacktestView
+            instruments={instruments.reduce((acc, curr) => ({ ...acc, [curr.symbol]: curr }), {})}
+            selectedSymbol={selectedSymbol}
+            onSelectSymbol={(sym) => {
+              setSelectedSymbol(sym);
+              fetchMarketDataForSymbol(sym, timeframe);
+            }}
+            fetchLiveCandles={async (sym, tf) => {
+              try {
+                const res = await API.getCandles(sym, tf);
+                return res?.candles || [];
+              } catch {
+                return candles;
+              }
+            }}
+          />
         )}
       </main>
 

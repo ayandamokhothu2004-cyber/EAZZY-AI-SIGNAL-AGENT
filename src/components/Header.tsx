@@ -29,8 +29,8 @@ interface HeaderProps {
   lastUpdated: number;
   performance?: PerformanceAnalytics | null;
   riskSettings: RiskSettings;
-  activeView: 'TERMINAL' | 'ANALYSIS' | 'JOURNAL' | 'PERFORMANCE';
-  onSelectView: (view: 'TERMINAL' | 'ANALYSIS' | 'JOURNAL' | 'PERFORMANCE') => void;
+  activeView: 'TERMINAL' | 'ANALYSIS' | 'JOURNAL' | 'PERFORMANCE' | 'BACKTEST';
+  onSelectView: (view: 'TERMINAL' | 'ANALYSIS' | 'JOURNAL' | 'PERFORMANCE' | 'BACKTEST') => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -191,6 +191,18 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           >
             Performance & Calibration
+          </button>
+          <button
+            id="nav-backtest"
+            onClick={() => onSelectView('BACKTEST')}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all flex items-center gap-1.5 ${
+              activeView === 'BACKTEST'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5 text-amber-400" />
+            <span>Event-Based Backtest</span>
           </button>
         </nav>
 

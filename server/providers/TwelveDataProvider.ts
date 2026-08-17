@@ -44,8 +44,13 @@ export class TwelveDataProvider implements MarketDataProvider {
     this.apiKey = process.env.TWELVE_DATA_API_KEY || '';
   }
 
+  private getApiKey(): string {
+    return (process.env.TWELVE_DATA_API_KEY || this.apiKey || '').trim();
+  }
+
   public get isConfigured(): boolean {
-    return Boolean(this.apiKey && this.apiKey.trim().length > 5);
+    const key = this.getApiKey();
+    return Boolean(key && key.length > 5);
   }
 
   /**
@@ -223,9 +228,10 @@ export class TwelveDataProvider implements MarketDataProvider {
       this.registerRequest();
 
       // Build Twelve Data quote URL
+      const apiKey = this.getApiKey();
       const querySymbol = asset.providerSymbol;
       const url = `${this.baseUrl}/quote?symbol=${encodeURIComponent(querySymbol)}&apikey=${encodeURIComponent(
-        this.apiKey
+        apiKey
       )}`;
 
       const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
@@ -462,13 +468,14 @@ export class TwelveDataProvider implements MarketDataProvider {
     try {
       this.registerRequest();
 
+      const apiKey = this.getApiKey();
       const interval = this.formatInterval(timeframe);
       const url = `${this.baseUrl}/time_series?symbol=${encodeURIComponent(
         asset.providerSymbol
       )}&interval=${encodeURIComponent(interval)}&outputsize=${Math.min(
         150,
         Math.max(30, numberOfCandles)
-      )}&apikey=${encodeURIComponent(this.apiKey)}`;
+      )}&apikey=${encodeURIComponent(apiKey)}`;
 
       const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
 
