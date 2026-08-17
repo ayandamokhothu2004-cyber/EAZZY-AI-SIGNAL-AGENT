@@ -449,7 +449,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
       {/* OHLCV Stat Ribbon */}
       {activeCandle && (
-        <div className="flex items-center gap-4 py-1.5 px-3 text-[11px] font-mono text-slate-400 bg-slate-950/60 rounded border border-slate-800/60">
+        <div className="flex items-center gap-4 py-1.5 px-3 text-[11px] font-mono text-slate-400 bg-slate-950/60 rounded border border-slate-800/60 flex-wrap">
           <span>
             O: <span className="text-slate-200 font-bold">{activeCandle.open.toFixed(instrument.digits)}</span>
           </span>
@@ -470,6 +470,12 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           <span className="hidden sm:inline text-slate-500">
             Time: {new Date(activeCandle.time).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
           </span>
+          {hoverIndex === null && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] bg-blue-950/70 text-blue-300 border border-blue-800/50">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping"></span>
+              LIVE / FORMING
+            </span>
+          )}
         </div>
       )}
 

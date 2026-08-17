@@ -10,6 +10,9 @@ import {
   ProviderStatusInfo,
   SingleProviderStatus,
   InstrumentProviderHealth,
+  CandleState,
+  EngineStatus,
+  ConnectionStatus,
 } from '../../src/types';
 import {
   SUPPORTED_ASSETS,
@@ -17,6 +20,11 @@ import {
   normalizeSymbolKey,
   getAssetMarketStatus,
 } from '../config/assets';
+import {
+  REFRESH_INTERVALS,
+  getCandleState,
+  TIMEFRAME_DURATIONS_MS,
+} from '../config/intervals';
 
 interface PriceRecord {
   twelvePrice?: number;
@@ -35,15 +43,17 @@ export class MarketDataManager {
   private lastActiveProviderBySymbol = new Map<string, string>();
   private lastErrorsBySymbol = new Map<string, string>();
   private lastPricesBySymbol = new Map<string, PriceRecord>();
+  private lastQuoteTimestamps = new Map<string, number>();
   private activeConflictMap = new Map<
     string,
     { conflict: boolean; reason: string; diffPercent: number; twelvePrice: number; finnhubPrice: number }
   >();
 
-  // Cooldown duration: 30 seconds after Twelve Data fails before retrying primary
-  private readonly PRIMARY_COOLDOWN_MS = 30000;
+  // Cooldown duration: Base 30 seconds after Twelve Data fails with controlled exponential backoff
+  private readonly BASE_PRIMARY_COOLDOWN_MS = 30000;
+  private readonly MAX_PRIMARY_COOLDOWN_MS = 240000; // 4 minutes max backoff
 
-  // In-flight deduplication and short TTL caching (Requirement 17G)
+  // In-flight deduplication and short TTL caching (Requirement 13 & 17G)
   private inFlightQuotes = new Map<string, Promise<MarketPrice>>();
   private cachedQuotes = new Map<string, { quote: MarketPrice; timestamp: number }>();
   private readonly QUOTE_CACHE_TTL_MS = 2500;
@@ -51,6 +61,30 @@ export class MarketDataManager {
   constructor() {
     this.primaryProvider = new TwelveDataProvider();
     this.secondaryProvider = new FinnhubProvider();
+  }
+
+  /**
+   * Logs structured provider event (Requirement 15)
+   */
+  private logProviderSwitch(oldProvider: string, newProvider: string, reason: string): void {
+    console.log(
+      `[PROVIDER SWITCH]\nold provider: ${oldProvider}\nnew provider: ${newProvider}\nreason: ${reason}\ntimestamp: ${new Date().toISOString()}`
+    );
+  }
+
+  /**
+   * Resets internal cache and failover state (useful for test isolation)
+   */
+  public resetState(): void {
+    this.primaryFailureCount = 0;
+    this.primaryCooldownUntil = 0;
+    this.lastActiveProviderBySymbol.clear();
+    this.lastErrorsBySymbol.clear();
+    this.lastPricesBySymbol.clear();
+    this.lastQuoteTimestamps.clear();
+    this.activeConflictMap.clear();
+    this.inFlightQuotes.clear();
+    this.cachedQuotes.clear();
   }
 
   /**
@@ -222,6 +256,7 @@ export class MarketDataManager {
 
   private async fetchQuoteInternal(asset: Asset, now: number): Promise<MarketPrice> {
     const isTwelveDataCoolingDown = now < this.primaryCooldownUntil;
+    const previousActive = this.lastActiveProviderBySymbol.get(asset.symbol);
 
     let primaryQuote: MarketPrice | null = null;
     let primaryError: string | null = null;
@@ -237,14 +272,20 @@ export class MarketDataManager {
           rec.twelvePrice = primaryQuote.price;
           rec.twelveTime = primaryQuote.timestamp;
           this.lastPricesBySymbol.set(asset.symbol, rec);
+          this.lastQuoteTimestamps.set(asset.symbol, primaryQuote.timestamp || now);
         }
 
         // If Twelve Data returned a healthy LIVE quote
         if (primaryQuote.status === 'LIVE' && primaryQuote.price > 0) {
           // Recovery: Reset failure state on success
-          if (this.primaryFailureCount > 0) {
+          if (this.primaryFailureCount > 0 || previousActive === 'Finnhub') {
             console.log(
               `[MARKET DATA RECOVERY] Twelve Data recovered successfully for ${asset.symbol}. Restoring primary provider.`
+            );
+            this.logProviderSwitch(
+              previousActive || 'Finnhub',
+              'Twelve Data',
+              'Twelve Data health recovery'
             );
             this.primaryFailureCount = 0;
             this.primaryCooldownUntil = 0;
@@ -278,9 +319,14 @@ export class MarketDataManager {
       )}s remaining)`;
     }
 
-    // STEP 2: Handle Twelve Data failure and initiate Failover to Finnhub
+    // STEP 2: Handle Twelve Data failure and initiate Failover to Finnhub with exponential backoff
     this.primaryFailureCount++;
-    this.primaryCooldownUntil = now + this.PRIMARY_COOLDOWN_MS;
+    const backoffMultiplier = Math.min(Math.pow(2, Math.max(0, this.primaryFailureCount - 1)), 8);
+    const cooldownDuration = Math.min(
+      this.BASE_PRIMARY_COOLDOWN_MS * backoffMultiplier,
+      this.MAX_PRIMARY_COOLDOWN_MS
+    );
+    this.primaryCooldownUntil = now + cooldownDuration;
     this.lastErrorsBySymbol.set(asset.symbol, primaryError || 'Primary failed');
 
     // Attempt Finnhub as Secondary / Fallback provider
@@ -292,6 +338,14 @@ export class MarketDataManager {
           }\nFallback: Finnhub\nActive provider: Finnhub`
         );
 
+        if (previousActive !== 'Finnhub') {
+          this.logProviderSwitch(
+            previousActive || 'Twelve Data',
+            'Finnhub',
+            `Twelve Data failure: ${primaryError || 'Unresponsive'}`
+          );
+        }
+
         const finnhubQuote = await this.secondaryProvider.getQuote(asset);
 
         if (finnhubQuote.price > 0) {
@@ -299,6 +353,7 @@ export class MarketDataManager {
           rec.finnhubPrice = finnhubQuote.price;
           rec.finnhubTime = finnhubQuote.timestamp;
           this.lastPricesBySymbol.set(asset.symbol, rec);
+          this.lastQuoteTimestamps.set(asset.symbol, finnhubQuote.timestamp || now);
         }
 
         if (finnhubQuote.status === 'LIVE' && finnhubQuote.price > 0) {
@@ -336,6 +391,9 @@ export class MarketDataManager {
     }
 
     // STEP 3: Both providers failed or unavailable
+    if (previousActive && previousActive !== 'None') {
+      this.logProviderSwitch(previousActive, 'None', 'All market providers unavailable');
+    }
     this.lastActiveProviderBySymbol.set(asset.symbol, 'None');
     return {
       symbol: asset.symbol,
@@ -604,6 +662,115 @@ export class MarketDataManager {
       },
       activeProvider: overallActive,
       instruments: instrumentsHealth,
+    };
+  }
+
+  /**
+   * Retrieves the age of the latest market data in seconds for a symbol.
+   */
+  public getDataAgeSeconds(symbol: string): number {
+    const asset = getAssetConfig(symbol);
+    const symKey = asset ? asset.symbol : symbol;
+    const lastTime = this.lastQuoteTimestamps.get(symKey);
+    if (!lastTime) return 999;
+    return Math.max(0, Math.floor((Date.now() - lastTime) / 1000));
+  }
+
+  /**
+   * Checks whether the market data for a symbol is stale (older than STALE_THRESHOLD_MS).
+   */
+  public isDataStale(symbol: string, maxAgeMs: number = REFRESH_INTERVALS.STALE_THRESHOLD_MS): boolean {
+    const asset = getAssetConfig(symbol);
+    const symKey = asset ? asset.symbol : symbol;
+    const lastTime = this.lastQuoteTimestamps.get(symKey);
+    if (!lastTime) return false; // If not fetched yet, not flagged as stale
+    return Date.now() - lastTime > maxAgeMs;
+  }
+
+  /**
+   * Comprehensive Engine & Market Refresh Status (Requirement 1, 2, 8, 9, 12).
+   */
+  public async getEngineStatus(
+    symbol: string = 'EURUSD',
+    monitoredSignalsCount: number = 0,
+    candlesByTF?: Record<Timeframe, MarketCandle[]>
+  ): Promise<EngineStatus> {
+    const asset = getAssetConfig(symbol);
+    const symKey = asset ? asset.symbol : symbol;
+    const now = Date.now();
+
+    const lastTime = this.lastQuoteTimestamps.get(symKey) || now;
+    const dataAgeSeconds = Math.max(0, Math.floor((now - lastTime) / 1000));
+
+    const isCoolingDown = now < this.primaryCooldownUntil;
+    const primaryStatus = await this.primaryProvider.getProviderStatus();
+    const secondaryStatus = await this.secondaryProvider.getProviderStatus();
+
+    const activeProvider = this.lastActiveProviderBySymbol.get(symKey) || (this.primaryFailureCount > 0 ? 'Finnhub' : 'Twelve Data');
+    const backupProvider = activeProvider === 'Twelve Data' ? 'Finnhub' : 'Twelve Data';
+
+    // Market feed state: LIVE, STALE, RECONNECTING, OFFLINE
+    let marketFeed: ConnectionStatus = 'LIVE';
+    if (!primaryStatus.configured && !secondaryStatus.configured) {
+      marketFeed = 'OFFLINE';
+    } else if (isCoolingDown && this.primaryFailureCount > 0 && activeProvider !== 'Finnhub') {
+      marketFeed = 'RECONNECTING';
+    } else if (this.isDataStale(symKey)) {
+      marketFeed = 'STALE';
+    } else if (activeProvider === 'None') {
+      marketFeed = isCoolingDown ? 'RECONNECTING' : 'OFFLINE';
+    }
+
+    // Determine candle states for M5, M15, H1, H4
+    const candleStates: Record<Timeframe, CandleState> = {
+      M5: 'UNAVAILABLE',
+      M15: 'UNAVAILABLE',
+      H1: 'UNAVAILABLE',
+      H4: 'UNAVAILABLE',
+      D1: 'UNAVAILABLE',
+    };
+
+    const tfList: Timeframe[] = ['M5', 'M15', 'H1', 'H4', 'D1'];
+    for (const tf of tfList) {
+      const candles = candlesByTF ? candlesByTF[tf] : undefined;
+      const latestCandle = candles && candles.length > 0 ? candles[candles.length - 1] : undefined;
+      candleStates[tf] = getCandleState(latestCandle?.time, tf, now);
+    }
+
+    // Scanner state: PAUSED if stale, otherwise ACTIVE
+    const isStale = marketFeed === 'STALE' || marketFeed === 'OFFLINE';
+    const scannerStatus = isStale ? 'PAUSED' : 'ACTIVE';
+    const pauseReason = isStale
+      ? 'STALE DATA — SIGNAL GENERATION PAUSED'
+      : undefined;
+
+    return {
+      marketFeed,
+      activeProvider,
+      backupProvider,
+      lastTickTimestamp: lastTime,
+      lastTickAgeSeconds: dataAgeSeconds,
+      scannerStatus,
+      pauseReason,
+      nextScanSeconds: Math.ceil(REFRESH_INTERVALS.SCAN_INTERVAL_MS / 1000),
+      candleStates,
+      signalsMonitoredCount,
+      refreshIntervals: {
+        quoteRefreshMs: REFRESH_INTERVALS.QUOTE_REFRESH_INTERVAL_MS,
+        candleRefreshMs: REFRESH_INTERVALS.CANDLE_REFRESH_INTERVAL_MS,
+        scanIntervalMs: REFRESH_INTERVALS.SCAN_INTERVAL_MS,
+        staleThresholdMs: REFRESH_INTERVALS.STALE_THRESHOLD_MS,
+      },
+      providerHealth: {
+        twelveData: isCoolingDown
+          ? 'COOLDOWN'
+          : primaryStatus.status === 'ONLINE'
+          ? 'CONNECTED'
+          : primaryStatus.status === 'RATE_LIMITED'
+          ? 'RATE_LIMITED'
+          : 'DISCONNECTED',
+        finnhub: secondaryStatus.status === 'ONLINE' ? 'CONNECTED' : secondaryStatus.status === 'RATE_LIMITED' ? 'RATE_LIMITED' : 'DISCONNECTED',
+      },
     };
   }
 }

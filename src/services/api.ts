@@ -53,6 +53,14 @@ export const API = {
     );
   },
 
+  async getEngineStatus(symbol?: string): Promise<import('../types').EngineStatus> {
+    return fetchJson<import('../types').EngineStatus>(
+      `/api/market/engine-status${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ''}`,
+      undefined,
+      'Failed to fetch live engine status'
+    );
+  },
+
   async getMarketOverview(): Promise<Record<string, MarketPrice>> {
     const data = await fetchJson<{ overview: Record<string, MarketPrice> }>(
       '/api/market/overview',

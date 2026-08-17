@@ -10,6 +10,7 @@ import { BacktestView } from './components/BacktestView';
 import { RiskSettingsModal } from './components/RiskSettingsModal';
 import { AddInstrumentModal } from './components/AddInstrumentModal';
 import { NotificationsDrawer } from './components/NotificationsDrawer';
+import { LiveEngineStatus } from './components/LiveEngineStatus';
 import { API } from './services/api';
 import { playSignalChime, playOutcomeSound } from './utils/audio';
 import {
@@ -22,6 +23,7 @@ import {
   PerformanceAnalytics,
   RiskSettings,
   SignalNotification,
+  EngineStatus,
 } from './types';
 
 const defaultRiskSettings: RiskSettings = {
@@ -50,12 +52,14 @@ export function App() {
   const [marketStatus, setMarketStatus] = useState<'OPEN' | 'CLOSED' | 'WEEKEND'>('OPEN');
   const [latencyMs, setLatencyMs] = useState<number>(45);
   const [lastUpdated, setLastUpdated] = useState<number>(Date.now());
+  const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(null);
 
   // Signals, Journal & Performance
   const [signals, setSignals] = useState<Record<string, Signal>>({});
   const [journal, setJournal] = useState<Signal[]>([]);
   const [performance, setPerformance] = useState<PerformanceAnalytics | null>(null);
   const [isScanning, setIsScanning] = useState<boolean>(false);
+  const [isRefreshingEngine, setIsRefreshingEngine] = useState<boolean>(false);
 
   // Risk & Audio
   const [riskSettings, setRiskSettings] = useState<RiskSettings>(() => {
@@ -116,21 +120,25 @@ export function App() {
     ]);
   }, []);
 
-  // 1. Initial Load: Instruments, Journal, Performance, and Market Overview
+  // 1. Initial Load: Instruments, Journal, Performance, Market Overview, and Engine Status
   useEffect(() => {
     async function initApp() {
       try {
-        const [instList, journalData, perfData, marketOverview] = await Promise.all([
+        const [instList, journalData, perfData, marketOverview, engStatus] = await Promise.all([
           API.getInstruments(),
           API.getJournal(),
           API.getPerformance(),
           API.getMarketOverview().catch(() => ({})),
+          API.getEngineStatus(selectedSymbol).catch(() => null),
         ]);
         setInstruments(instList);
         setJournal(journalData.signals);
         setPerformance(perfData);
         if (marketOverview && Object.keys(marketOverview).length > 0) {
           setQuotes(marketOverview as any);
+        }
+        if (engStatus) {
+          setEngineStatus(engStatus);
         }
       } catch (err) {
         console.error('Initialization error:', err);
@@ -216,21 +224,35 @@ export function App() {
     handleScanSignal();
   }, [selectedSymbol, selectedTradeType]);
 
-  // 4. Background Real-time Tracker Loop (every 5 seconds)
+  // 4. Background Multi-Tier Live Market Refresh Loop
+  // TIER 1: Continuous Live Quote Refresh & Signal Outcome Tracker (every 5000ms by default)
   useEffect(() => {
+    const quoteIntervalMs = engineStatus?.refreshIntervals?.quoteRefreshMs || 5000;
     const interval = setInterval(async () => {
       try {
-        const res = await API.trackerTick(selectedSymbol);
-        if (res.performance) {
-          setPerformance(res.performance);
+        const [tickRes, engStatus] = await Promise.all([
+          API.trackerTick(selectedSymbol),
+          API.getEngineStatus(selectedSymbol).catch(() => null),
+        ]);
+
+        if (tickRes.performance) {
+          setPerformance(tickRes.performance);
+        }
+        if (engStatus) {
+          setEngineStatus(engStatus);
+          if (engStatus.marketFeed === 'OFFLINE') {
+            setMarketStatus('CLOSED');
+          } else {
+            setMarketStatus('OPEN');
+          }
         }
 
         // Check if any active signals changed status
-        if (res.trackingResult && res.trackingResult.statusChanges.length > 0) {
+        if (tickRes.trackingResult && tickRes.trackingResult.statusChanges.length > 0) {
           const updatedJournal = await API.getJournal();
           setJournal(updatedJournal.signals);
 
-          for (const change of res.trackingResult.statusChanges) {
+          for (const change of tickRes.trackingResult.statusChanges) {
             if (change.status === 'TP1_HIT' || change.status === 'TP2_HIT') {
               playOutcomeSound('TP_HIT', audioMuted);
               addNotification(
@@ -251,10 +273,46 @@ export function App() {
       } catch (err) {
         // Silently continue loop
       }
-    }, 5000);
+    }, quoteIntervalMs);
 
     return () => clearInterval(interval);
-  }, [selectedSymbol, audioMuted, addNotification]);
+  }, [selectedSymbol, audioMuted, addNotification, engineStatus?.refreshIntervals?.quoteRefreshMs]);
+
+  // TIER 2: Live Candlestick Sync (every 15000ms by default)
+  useEffect(() => {
+    const candleIntervalMs = engineStatus?.refreshIntervals?.candleRefreshMs || 15000;
+    const candleInterval = setInterval(() => {
+      fetchMarketDataForSymbol(selectedSymbol, timeframe);
+    }, candleIntervalMs);
+
+    return () => clearInterval(candleInterval);
+  }, [selectedSymbol, timeframe, fetchMarketDataForSymbol, engineStatus?.refreshIntervals?.candleRefreshMs]);
+
+  // TIER 3: Periodic Auto-Rescan Loop (every 30000ms by default)
+  useEffect(() => {
+    const scanIntervalMs = engineStatus?.refreshIntervals?.scanIntervalMs || 30000;
+    const scanInterval = setInterval(() => {
+      if (engineStatus?.scannerStatus === 'ACTIVE') {
+        handleScanSignal();
+      }
+    }, scanIntervalMs);
+
+    return () => clearInterval(scanInterval);
+  }, [handleScanSignal, engineStatus?.scannerStatus, engineStatus?.refreshIntervals?.scanIntervalMs]);
+
+  // Force Manual Refresh of all layers
+  const handleManualRefreshAll = async () => {
+    setIsRefreshingEngine(true);
+    try {
+      await Promise.all([
+        fetchMarketDataForSymbol(selectedSymbol, timeframe),
+        handleScanSignal(),
+        API.getEngineStatus(selectedSymbol).then(setEngineStatus).catch(() => null),
+      ]);
+    } finally {
+      setIsRefreshingEngine(false);
+    }
+  };
 
   // Toggle Audio
   const handleToggleAudio = () => {
@@ -312,7 +370,14 @@ export function App() {
       />
 
       {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 space-y-5">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 space-y-4">
+        {/* Live Engine Status Diagnostic */}
+        <LiveEngineStatus
+          engineStatus={engineStatus}
+          onManualRefresh={handleManualRefreshAll}
+          isRefreshing={isRefreshingEngine}
+        />
+
         {/* Market Watch Ticker Ribbon */}
         <MarketWatch
           instruments={instruments}

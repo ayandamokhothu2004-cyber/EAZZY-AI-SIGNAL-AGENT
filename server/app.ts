@@ -67,6 +67,18 @@ export function createExpressApp(): express.Express {
     }
   });
 
+  // Engine & Live Market Refresh Status
+  router.get('/market/engine-status', async (req, res) => {
+    try {
+      const symbol = (req.query.symbol as string) || 'EURUSD';
+      const activeJournal = getSignalJournal().filter((s) => s.status === 'ACTIVE');
+      const status = await marketDataManager.getEngineStatus(symbol, activeJournal.length);
+      res.json(status);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Failed to fetch engine status' });
+    }
+  });
+
   // Market overview (all configured assets)
   router.get('/market/overview', async (_req, res) => {
     try {
@@ -167,8 +179,27 @@ export function createExpressApp(): express.Express {
       const requiredTFs: Timeframe[] = ['M5', 'M15', 'H1', 'H4'];
 
       const marketData = await fetchLiveMarketData(sym, requiredTFs);
-      const entryCandles = marketData.candles[entryTF] || marketData.candles['M15'] || [];
-      const contextCandles = marketData.candles[contextTF] || marketData.candles['H1'] || entryCandles;
+      const rawEntryCandles = marketData.candles[entryTF] || marketData.candles['M15'] || [];
+      const rawContextCandles = marketData.candles[contextTF] || marketData.candles['H1'] || rawEntryCandles;
+
+      // STALE DATA PROTECTION (Requirement 9 & 16)
+      const isStale = marketDataManager.isDataStale(sym);
+
+      // FORMING vs CLOSED CANDLE ISOLATION (Requirement 4 & 16)
+      // The currently forming candle can be displayed on chart, but must NOT confirm strategy signals.
+      const now = Date.now();
+      const lastEntryCandle = rawEntryCandles[rawEntryCandles.length - 1];
+      const isLastCandleForming = lastEntryCandle && getCandleState(lastEntryCandle.time, entryTF, now) === 'FORMING';
+      
+      const confirmedEntryCandles = isLastCandleForming && rawEntryCandles.length > 15
+        ? rawEntryCandles.slice(0, rawEntryCandles.length - 1)
+        : rawEntryCandles;
+
+      const lastContextCandle = rawContextCandles[rawContextCandles.length - 1];
+      const isLastContextForming = lastContextCandle && getCandleState(lastContextCandle.time, contextTF, now) === 'FORMING';
+      const confirmedContextCandles = isLastContextForming && rawContextCandles.length > 15
+        ? rawContextCandles.slice(0, rawContextCandles.length - 1)
+        : rawContextCandles;
 
       const tfCandlesMap = {
         M5: marketData.candles['M5'] || [],
@@ -181,8 +212,8 @@ export function createExpressApp(): express.Express {
       const baseSignal = generateSignalDecision(
         instConfig,
         tType,
-        entryCandles,
-        contextCandles,
+        confirmedEntryCandles,
+        confirmedContextCandles,
         rSettings,
         undefined,
         tfCandlesMap
@@ -192,12 +223,23 @@ export function createExpressApp(): express.Express {
       baseSignal.provider = marketData.dataSource || instConfig.provider || 'Twelve Data';
       baseSignal.dataSource = baseSignal.provider;
 
-      // Closed-candle verification log
-      const originatingCandle = entryCandles[entryCandles.length - 1];
+      // Stale data guard enforcement
+      if (isStale) {
+        baseSignal.direction = 'WAIT';
+        baseSignal.setupExplanation = 'STALE DATA — SIGNAL GENERATION PAUSED. Live market feed age exceeds maximum allowed threshold.';
+        baseSignal.reasons = ['STALE DATA — SIGNAL GENERATION PAUSED. Awaiting fresh tick update before executing strategy scan.'];
+        baseSignal.conditionsDetected = ['Protection: Stale Data Filter Active'];
+      }
+
+      // Closed-candle verification & structured logging (Requirement 15)
+      const originatingCandle = confirmedEntryCandles[confirmedEntryCandles.length - 1];
       const candleTimeStr = originatingCandle ? new Date(originatingCandle.time).toISOString() : 'N/A';
-      console.log(
-        `[SIGNAL AUDIT CREATION] ID: ${baseSignal.id} | Symbol: ${sym} | Dir: ${baseSignal.direction} | Strat: ${baseSignal.strategy} | TF: ${entryTF} | CandleTime: ${candleTimeStr} | ScanTime: ${new Date(baseSignal.scanTimestamp || Date.now()).toISOString()} | Entry: ${baseSignal.suggestedEntry} | SL: ${baseSignal.stopLoss} | TP1: ${baseSignal.takeProfit1} | RR: ${baseSignal.riskRewardRatio} | Conf: ${baseSignal.aiConfidence} | Provider: ${baseSignal.provider}`
-      );
+      
+      if (baseSignal.direction !== 'WAIT') {
+        console.log(
+          `[SIGNAL CREATED]\ntimestamp: ${new Date(baseSignal.timestamp).toISOString()}\nsymbol: ${baseSignal.instrument}\ndirection: ${baseSignal.direction}\nentry: ${baseSignal.suggestedEntry}\nSL: ${baseSignal.stopLoss}\nTP: ${baseSignal.takeProfit1}\nconfidence: ${baseSignal.aiConfidence}\nprovider: ${baseSignal.provider}\noriginating candle: ${candleTimeStr}`
+        );
+      }
 
       // Market data provider consistency / conflict check
       const consistency = marketDataManager.checkDataConsistency(sym);

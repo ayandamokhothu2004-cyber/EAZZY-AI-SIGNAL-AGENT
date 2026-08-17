@@ -530,6 +530,33 @@ export interface NotificationItem {
   instrument?: string;
 }
 
+export type ConnectionStatus = 'LIVE' | 'STALE' | 'RECONNECTING' | 'OFFLINE';
+
+export type CandleState = 'FORMING' | 'CLOSED' | 'STALE' | 'UNAVAILABLE';
+
+export interface EngineStatus {
+  marketFeed: ConnectionStatus;
+  activeProvider: string;
+  backupProvider: string;
+  lastTickTimestamp: number;
+  lastTickAgeSeconds: number;
+  scannerStatus: 'ACTIVE' | 'PAUSED' | 'SCANNING';
+  pauseReason?: string;
+  nextScanSeconds: number;
+  candleStates: Record<Timeframe, CandleState>;
+  signalsMonitoredCount: number;
+  refreshIntervals: {
+    quoteRefreshMs: number;
+    candleRefreshMs: number;
+    scanIntervalMs: number;
+    staleThresholdMs: number;
+  };
+  providerHealth: {
+    twelveData: 'CONNECTED' | 'DISCONNECTED' | 'COOLDOWN' | 'RATE_LIMITED';
+    finnhub: 'CONNECTED' | 'DISCONNECTED' | 'RATE_LIMITED';
+  };
+}
+
 export * from './backtest';
 
 

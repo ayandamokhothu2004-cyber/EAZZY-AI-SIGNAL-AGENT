@@ -608,6 +608,9 @@ export function trackSignalsAgainstMarketData(
     });
 
     if (res.statusChanged && res.newStatus) {
+      console.log(
+        `[SIGNAL UPDATED]\ntimestamp: ${new Date(update.timestamp || Date.now()).toISOString()}\nsymbol: ${signal.instrument}\ncurrent price: ${update.price}\nprovider: ${update.dataSource || 'Twelve Data'}\nstate: ${res.newStatus}`
+      );
       statusChanges.push({
         id: signal.id,
         status: res.newStatus,
