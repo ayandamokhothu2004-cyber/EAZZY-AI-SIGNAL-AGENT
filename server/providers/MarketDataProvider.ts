@@ -1,4 +1,22 @@
-import { Asset, MarketPrice, MarketCandle, Timeframe, ProviderStatusInfo } from '../../src/types';
+import {
+  Asset,
+  MarketPrice,
+  MarketCandle,
+  Timeframe,
+  ProviderStatusInfo,
+  SingleProviderStatus,
+  ProviderState,
+} from '../../src/types';
+
+export interface HealthCheckResult {
+  healthy: boolean;
+  state: ProviderState;
+  latencyMs: number;
+  testedSymbol: string;
+  price?: number;
+  timestamp?: number;
+  errorReason?: string;
+}
 
 export interface MarketDataProvider {
   readonly name: string;
@@ -22,6 +40,21 @@ export interface MarketDataProvider {
    * Retrieves provider status, rate limit metrics, and health diagnostics.
    */
   getProviderStatus(): Promise<ProviderStatusInfo>;
+
+  /**
+   * Retrieves detailed single provider status.
+   */
+  getSingleStatus(): Promise<SingleProviderStatus>;
+
+  /**
+   * Performs an active, lightweight health check against the live API.
+   */
+  checkHealth(): Promise<HealthCheckResult>;
+
+  /**
+   * Manually resets cooldown and rate limit timestamps.
+   */
+  resetCooldown(): void;
 
   /**
    * Checks if a symbol is supported on the provider.

@@ -28,11 +28,16 @@ export function calculatePerformanceMetrics(
       winRate: 0,
       lossRate: 0,
       totalR: 0,
+      grossTotalR: 0,
+      netTotalR: 0,
       averageR: 0,
       medianR: 0,
       grossWinningR: 0,
       grossLosingR: 0,
       profitFactor: 0,
+      grossProfitFactor: 0,
+      netProfitFactor: 0,
+      totalCostImpactR: 0,
       averageWinR: 0,
       averageLossR: 0,
       expectancy: 0,
@@ -44,6 +49,8 @@ export function calculatePerformanceMetrics(
       averageTradeDurationMinutes: 0,
       bestTradeR: 0,
       worstTradeR: 0,
+      largestWinR: 0,
+      largestLossR: 0,
       ignoredSignalsCount,
     };
   }
@@ -53,8 +60,12 @@ export function calculatePerformanceMetrics(
   let breakevens = 0;
   let ambiguousTrades = 0;
   let totalR = 0;
+  let grossTotalR = 0;
+  let totalCostImpactR = 0;
   let grossWinningR = 0;
   let grossLosingR = 0;
+  let rawGrossWinsR = 0;
+  let rawGrossLossesR = 0;
   let bestTradeR = -Infinity;
   let worstTradeR = Infinity;
   let totalDurationBars = 0;
@@ -68,9 +79,14 @@ export function calculatePerformanceMetrics(
   const rList: number[] = [];
 
   for (const t of trades) {
-    const r = t.RMultiple;
+    const r = t.RMultiple; // net R
+    const gR = typeof t.grossR === 'number' ? t.grossR : r;
+    const cost = typeof t.costImpactR === 'number' ? t.costImpactR : 0;
+
     rList.push(r);
     totalR += r;
+    grossTotalR += gR;
+    totalCostImpactR += cost;
     totalDurationBars += t.durationBars;
     totalDurationMs += t.durationMs;
 
@@ -80,6 +96,12 @@ export function calculatePerformanceMetrics(
 
     if (r > bestTradeR) bestTradeR = r;
     if (r < worstTradeR) worstTradeR = r;
+
+    if (gR > 0) {
+      rawGrossWinsR += gR;
+    } else if (gR < 0) {
+      rawGrossLossesR += Math.abs(gR);
+    }
 
     if (t.result === 'WIN' || r > 0.05) {
       wins++;
@@ -113,13 +135,23 @@ export function calculatePerformanceMetrics(
       ? Number(sortedR[mid].toFixed(2))
       : Number(((sortedR[mid - 1] + sortedR[mid]) / 2).toFixed(2));
 
-  // Profit Factor (safely handling zero loss case)
-  const profitFactor =
+  // Net Profit Factor (safely handling zero loss case)
+  const netProfitFactor =
     grossLosingR > 0.001
       ? Number((grossWinningR / grossLosingR).toFixed(2))
       : grossWinningR > 0
       ? 99.99
       : 0;
+
+  // Gross Profit Factor
+  const grossProfitFactor =
+    rawGrossLossesR > 0.001
+      ? Number((rawGrossWinsR / rawGrossLossesR).toFixed(2))
+      : rawGrossWinsR > 0
+      ? 99.99
+      : 0;
+
+  const profitFactor = netProfitFactor;
 
   const averageWinR = wins > 0 ? Number((grossWinningR / wins).toFixed(2)) : 0;
   const averageLossR = losses > 0 ? Number((grossLosingR / losses).toFixed(2)) : 0;
@@ -159,11 +191,16 @@ export function calculatePerformanceMetrics(
     winRate,
     lossRate,
     totalR: Number(totalR.toFixed(2)),
+    grossTotalR: Number(grossTotalR.toFixed(2)),
+    netTotalR: Number(totalR.toFixed(2)),
     averageR,
     medianR,
     grossWinningR: Number(grossWinningR.toFixed(2)),
     grossLosingR: Number(grossLosingR.toFixed(2)),
     profitFactor,
+    grossProfitFactor,
+    netProfitFactor,
+    totalCostImpactR: Number(totalCostImpactR.toFixed(2)),
     averageWinR,
     averageLossR,
     expectancy,
@@ -175,6 +212,8 @@ export function calculatePerformanceMetrics(
     averageTradeDurationMinutes: Math.round(totalDurationMs / totalTrades / 60000),
     bestTradeR: bestTradeR === -Infinity ? 0 : Number(bestTradeR.toFixed(2)),
     worstTradeR: worstTradeR === Infinity ? 0 : Number(worstTradeR.toFixed(2)),
+    largestWinR: bestTradeR === -Infinity ? 0 : Number(bestTradeR.toFixed(2)),
+    largestLossR: worstTradeR === Infinity ? 0 : Number(worstTradeR.toFixed(2)),
     ignoredSignalsCount,
   };
 }
@@ -279,6 +318,7 @@ export function generateConfidenceBuckets(trades: BacktestTrade[]): ConfidenceBu
       averageR: stats.averageR,
       expectancy: stats.expectancy,
       profitFactor: stats.profitFactor,
+      maxDrawdownR: stats.maxDrawdownR,
     };
   });
 }
@@ -427,6 +467,7 @@ export function generateAssetBreakdown(trades: BacktestTrade[]): AssetMetric[] {
       averageR: stats.averageR,
       expectancy: stats.expectancy,
       profitFactor: stats.profitFactor,
+      maxDrawdownR: stats.maxDrawdownR,
     };
   });
 }
@@ -458,6 +499,205 @@ export function generateTimeframeBreakdown(
       totalR: stats.totalR,
       averageR: stats.averageR,
       expectancy: stats.expectancy,
+      profitFactor: stats.profitFactor,
+      maxDrawdownR: stats.maxDrawdownR,
     };
   });
 }
+
+/**
+ * Identifies Best & Worst performing Asset, Strategy, and Timeframe
+ */
+export function computePerformerHighlights(
+  assetBreakdown: AssetMetric[],
+  strategyBreakdown: StrategyMetric[],
+  timeframeBreakdown: TimeframeMetric[]
+): {
+  bestPerformingAsset?: { symbol: string; winRate: number; totalR: number; expectancy: number };
+  worstPerformingAsset?: { symbol: string; winRate: number; totalR: number; expectancy: number };
+  bestPerformingStrategy?: { strategy: string; winRate: number; totalR: number; expectancy: number };
+  worstPerformingStrategy?: { strategy: string; winRate: number; totalR: number; expectancy: number };
+  bestPerformingTimeframe?: { timeframe: string; winRate: number; totalR: number; expectancy: number };
+  worstPerformingTimeframe?: { timeframe: string; winRate: number; totalR: number; expectancy: number };
+} {
+  const filterActive = <T extends { trades: number; totalR: number; winRate: number; expectancy: number }>(items: T[]) =>
+    items.filter((i) => i.trades > 0);
+
+  const activeAssets = filterActive(assetBreakdown);
+  const activeStrategies = filterActive(strategyBreakdown);
+  const activeTimeframes = filterActive(timeframeBreakdown);
+
+  const sortByPerformance = <T extends { totalR: number; expectancy: number }>(items: T[]) =>
+    [...items].sort((a, b) => b.totalR - a.totalR || b.expectancy - a.expectancy);
+
+  const sortedAssets = sortByPerformance(activeAssets);
+  const sortedStrategies = sortByPerformance(activeStrategies);
+  const sortedTimeframes = sortByPerformance(activeTimeframes);
+
+  return {
+    bestPerformingAsset: sortedAssets.length > 0 ? {
+      symbol: sortedAssets[0].symbol,
+      winRate: sortedAssets[0].winRate,
+      totalR: sortedAssets[0].totalR,
+      expectancy: sortedAssets[0].expectancy,
+    } : undefined,
+    worstPerformingAsset: sortedAssets.length > 1 ? {
+      symbol: sortedAssets[sortedAssets.length - 1].symbol,
+      winRate: sortedAssets[sortedAssets.length - 1].winRate,
+      totalR: sortedAssets[sortedAssets.length - 1].totalR,
+      expectancy: sortedAssets[sortedAssets.length - 1].expectancy,
+    } : undefined,
+    bestPerformingStrategy: sortedStrategies.length > 0 ? {
+      strategy: sortedStrategies[0].strategy,
+      winRate: sortedStrategies[0].winRate,
+      totalR: sortedStrategies[0].totalR,
+      expectancy: sortedStrategies[0].expectancy,
+    } : undefined,
+    worstPerformingStrategy: sortedStrategies.length > 1 ? {
+      strategy: sortedStrategies[sortedStrategies.length - 1].strategy,
+      winRate: sortedStrategies[sortedStrategies.length - 1].winRate,
+      totalR: sortedStrategies[sortedStrategies.length - 1].totalR,
+      expectancy: sortedStrategies[sortedStrategies.length - 1].expectancy,
+    } : undefined,
+    bestPerformingTimeframe: sortedTimeframes.length > 0 ? {
+      timeframe: sortedTimeframes[0].timeframe,
+      winRate: sortedTimeframes[0].winRate,
+      totalR: sortedTimeframes[0].totalR,
+      expectancy: sortedTimeframes[0].expectancy,
+    } : undefined,
+    worstPerformingTimeframe: sortedTimeframes.length > 1 ? {
+      timeframe: sortedTimeframes[sortedTimeframes.length - 1].timeframe,
+      winRate: sortedTimeframes[sortedTimeframes.length - 1].winRate,
+      totalR: sortedTimeframes[sortedTimeframes.length - 1].totalR,
+      expectancy: sortedTimeframes[sortedTimeframes.length - 1].expectancy,
+    } : undefined,
+  };
+}
+
+/**
+ * Executes a deterministic Monte Carlo bootstrap resample on trade R-multiples.
+ */
+export function runMonteCarloSimulation(
+  trades: BacktestTrade[],
+  iterations = 1000,
+  seed = 42
+): import('../types/backtest').MonteCarloSimulationResult {
+  const rList = trades.map((t) => t.RMultiple);
+
+  if (rList.length === 0) {
+    return {
+      iterations,
+      seed,
+      drawdownPercentiles: { p5: 0, p25: 0, p50: 0, p75: 0, p95: 0, max: 0 },
+      losingStreakPercentiles: { p5: 0, p50: 0, p95: 0, max: 0 },
+      endingEquityPercentiles: { p5: 100, p50: 100, p95: 100 },
+      riskOfRuinPercent: 0,
+      probabilityDrawdownAbove10R: 0,
+      probabilityDrawdownAbove15R: 0,
+      probabilityDrawdownAbove20R: 0,
+      simulatedCurves: [],
+    };
+  }
+
+  let state = seed;
+  const lcg = () => {
+    state = (state * 1664525 + 1013904223) % 4294967296;
+    return state / 4294967296;
+  };
+
+  const drawdowns: number[] = [];
+  const losingStreaks: number[] = [];
+  const endingEquities: number[] = [];
+  const simulatedCurves: { id: number; path: number[] }[] = [];
+
+  const tradeCount = rList.length;
+
+  for (let iter = 0; iter < iterations; iter++) {
+    let equity = 100;
+    let peakEquity = 100;
+    let maxDD = 0;
+    let curLossStreak = 0;
+    let maxLossStreak = 0;
+
+    const path: number[] = [100];
+
+    for (let t = 0; t < tradeCount; t++) {
+      const idx = Math.floor(lcg() * tradeCount);
+      const r = rList[idx];
+
+      equity += r;
+      if (iter < 25) {
+        path.push(Number(equity.toFixed(2)));
+      }
+
+      if (equity > peakEquity) {
+        peakEquity = equity;
+      }
+
+      const dd = peakEquity - equity;
+      if (dd > maxDD) {
+        maxDD = dd;
+      }
+
+      if (r < -0.05) {
+        curLossStreak++;
+        if (curLossStreak > maxLossStreak) maxLossStreak = curLossStreak;
+      } else {
+        curLossStreak = 0;
+      }
+    }
+
+    drawdowns.push(maxDD);
+    losingStreaks.push(maxLossStreak);
+    endingEquities.push(equity);
+
+    if (iter < 20) {
+      simulatedCurves.push({ id: iter + 1, path });
+    }
+  }
+
+  const sortNum = (arr: number[]) => [...arr].sort((a, b) => a - b);
+  const sortedDD = sortNum(drawdowns);
+  const sortedLS = sortNum(losingStreaks);
+  const sortedEE = sortNum(endingEquities);
+
+  const getP = (arr: number[], pct: number) => {
+    const idx = Math.min(arr.length - 1, Math.max(0, Math.floor((pct / 100) * arr.length)));
+    return Number(arr[idx].toFixed(2));
+  };
+
+  const ddAbove10 = (drawdowns.filter((d) => d >= 10).length / iterations) * 100;
+  const ddAbove15 = (drawdowns.filter((d) => d >= 15).length / iterations) * 100;
+  const ddAbove20 = (drawdowns.filter((d) => d >= 20).length / iterations) * 100;
+  const riskOfRuin = (drawdowns.filter((d) => d >= 25).length / iterations) * 100;
+
+  return {
+    iterations,
+    seed,
+    drawdownPercentiles: {
+      p5: getP(sortedDD, 5),
+      p25: getP(sortedDD, 25),
+      p50: getP(sortedDD, 50),
+      p75: getP(sortedDD, 75),
+      p95: getP(sortedDD, 95),
+      max: Number(sortedDD[sortedDD.length - 1].toFixed(2)),
+    },
+    losingStreakPercentiles: {
+      p5: getP(sortedLS, 5),
+      p50: getP(sortedLS, 50),
+      p95: getP(sortedLS, 95),
+      max: sortedLS[sortedLS.length - 1],
+    },
+    endingEquityPercentiles: {
+      p5: getP(sortedEE, 5),
+      p50: getP(sortedEE, 50),
+      p95: getP(sortedEE, 95),
+    },
+    riskOfRuinPercent: Number(riskOfRuin.toFixed(1)),
+    probabilityDrawdownAbove10R: Number(ddAbove10.toFixed(1)),
+    probabilityDrawdownAbove15R: Number(ddAbove15.toFixed(1)),
+    probabilityDrawdownAbove20R: Number(ddAbove20.toFixed(1)),
+    simulatedCurves,
+  };
+}
+

@@ -1,10 +1,13 @@
-import { MarketDataProvider } from './MarketDataProvider';
+import { MarketDataProvider, HealthCheckResult } from './MarketDataProvider';
 import {
   Asset,
   MarketPrice,
   MarketCandle,
   Timeframe,
   ProviderStatusInfo,
+  SingleProviderStatus,
+  ProviderState,
+  ProviderErrorReason,
   MarketDataStatus,
 } from '../../src/types';
 import { getAssetMarketStatus } from '../config/assets';
@@ -20,6 +23,15 @@ export class FinnhubProvider implements MarketDataProvider {
   public readonly name = 'Finnhub';
   private baseUrl = 'https://finnhub.io/api/v1';
 
+  // Provider State Machine
+  private state: ProviderState = 'DISCONNECTED';
+  private lastSuccessTime: number | null = null;
+  private lastFailureTime: number | null = null;
+  private lastErrorMessage: string | null = null;
+  private lastErrorReason: ProviderErrorReason | null = null;
+  private consecutiveFailures = 0;
+  private lastTestedSymbol = 'BINANCE:BTCUSDT';
+
   // In-memory caching
   private quoteCache = new Map<string, CacheEntry<MarketPrice>>();
   private candleCache = new Map<string, CacheEntry<MarketCandle[]>>();
@@ -34,15 +46,13 @@ export class FinnhubProvider implements MarketDataProvider {
   private dailyResetTime = Date.now() + 24 * 3600 * 1000;
   private isRateLimited = false;
   private rateLimitCooldownUntil = 0;
+
   private readonly MINUTE_LIMIT = 30;
   private readonly DAILY_LIMIT = 1000;
 
-  // Diagnostics
-  private lastSuccessTime = 0;
-  private lastErrorMessage = '';
-  private lastCheckedTime = 0;
-
-  constructor() {}
+  constructor() {
+    this.logApiKeyStatus();
+  }
 
   private getApiKey(): string {
     return (process.env.FINNHUB_API_KEY || '').trim();
@@ -54,39 +64,83 @@ export class FinnhubProvider implements MarketDataProvider {
   }
 
   /**
-   * Checks rate limit constraints before dispatching HTTP calls.
+   * Logs configuration status safely without printing the API key (Requirement 4 & 16)
    */
-  private checkRateLimit(): { allowed: boolean; reason?: string } {
+  public logApiKeyStatus(): void {
+    console.log(`FINNHUB_API_KEY: ${this.isConfigured ? 'CONFIGURED' : 'MISSING'}`);
+  }
+
+  /**
+   * Structured error logger (Requirement 4)
+   */
+  private logProviderError(status: number | string, reason: ProviderErrorReason, details?: string): void {
+    console.log(
+      `[FINNHUB ERROR]\nstatus: ${status}\nreason: ${reason}\ntimestamp: ${new Date().toISOString()}${
+        details ? `\ndetails: ${details}` : ''
+      }`
+    );
+  }
+
+  public getState(): ProviderState {
     const now = Date.now();
+    if (!this.isConfigured) return 'OFFLINE';
+    if (this.isRateLimited && now < this.rateLimitCooldownUntil) return 'RATE_LIMITED';
+    if (this.consecutiveFailures > 0 && now < this.rateLimitCooldownUntil) return 'COOLDOWN';
+    if (this.state === 'DISCONNECTED' || this.state === 'CONNECTING') return this.state;
+    if (this.lastSuccessTime && now - this.lastSuccessTime < 120000) return 'CONNECTED';
+    return this.state;
+  }
+
+  private checkRateLimit(): { allowed: boolean; reason?: string; errorReason?: ProviderErrorReason } {
+    const now = Date.now();
+
+    if (!this.isConfigured) {
+      return {
+        allowed: false,
+        reason: 'FINNHUB_API_KEY is not configured',
+        errorReason: 'UNCONFIGURED',
+      };
+    }
 
     if (now > this.dailyResetTime) {
       this.dailyRequestCount = 0;
       this.dailyResetTime = now + 24 * 3600 * 1000;
     }
 
-    if (this.isRateLimited && now < this.rateLimitCooldownUntil) {
+    if (now < this.rateLimitCooldownUntil) {
       const waitSec = Math.ceil((this.rateLimitCooldownUntil - now) / 1000);
       return {
         allowed: false,
-        reason: `Finnhub rate limit cooldown active (${waitSec}s remaining).`,
+        reason: `Finnhub cooldown active (${waitSec}s remaining).`,
+        errorReason: this.isRateLimited ? 'RATE_LIMIT' : this.lastErrorReason || 'SERVER_ERROR',
       };
-    } else if (this.isRateLimited && now >= this.rateLimitCooldownUntil) {
+    } else if (this.rateLimitCooldownUntil > 0 && now >= this.rateLimitCooldownUntil) {
       this.isRateLimited = false;
+      this.rateLimitCooldownUntil = 0;
+      if (this.state === 'COOLDOWN' || this.state === 'RATE_LIMITED') {
+        this.state = 'CONNECTING';
+      }
     }
 
     this.requestTimestamps = this.requestTimestamps.filter((t) => now - t < 60000);
 
     if (this.requestTimestamps.length >= this.MINUTE_LIMIT) {
+      this.isRateLimited = true;
+      this.rateLimitCooldownUntil = now + 15 * 1000;
       return {
         allowed: false,
-        reason: 'Finnhub rate limit reached (30 req/min). Using cache.',
+        reason: 'Finnhub rate limit threshold reached (30 req/min). Using cache.',
+        errorReason: 'RATE_LIMIT',
       };
     }
 
     if (this.dailyRequestCount >= this.DAILY_LIMIT) {
+      this.isRateLimited = true;
+      this.rateLimitCooldownUntil = this.dailyResetTime;
       return {
         allowed: false,
         reason: 'Finnhub daily limit reached.',
+        errorReason: 'RATE_LIMIT',
       };
     }
 
@@ -97,14 +151,153 @@ export class FinnhubProvider implements MarketDataProvider {
     const now = Date.now();
     this.requestTimestamps.push(now);
     this.dailyRequestCount++;
-    this.lastCheckedTime = now;
   }
 
   private handleRateLimitHit(message?: string): void {
     this.isRateLimited = true;
-    this.rateLimitCooldownUntil = Date.now() + 60 * 1000;
+    this.state = 'RATE_LIMITED';
+    this.lastFailureTime = Date.now();
     this.lastErrorMessage = message || 'HTTP 429 Rate Limit Exceeded';
-    console.warn(`[FinnhubProvider] Rate limit hit: ${this.lastErrorMessage}. Cooldown for 60s.`);
+    this.lastErrorReason = 'RATE_LIMIT';
+    this.rateLimitCooldownUntil = Date.now() + 60 * 1000;
+    this.logProviderError(429, 'RATE_LIMIT', message);
+  }
+
+  private handleTransientFailure(status: number, reason: ProviderErrorReason, message: string): void {
+    this.consecutiveFailures++;
+    this.lastFailureTime = Date.now();
+    this.lastErrorMessage = message;
+    this.lastErrorReason = reason;
+
+    const backoffSec = Math.min(60, Math.max(5, 5 * Math.pow(2, this.consecutiveFailures - 1)));
+    this.rateLimitCooldownUntil = Date.now() + backoffSec * 1000;
+    this.state = 'COOLDOWN';
+    this.logProviderError(status, reason, `${message} (Backoff: ${backoffSec}s)`);
+  }
+
+  private handleAuthFailure(status: number, message: string): void {
+    this.state = 'OFFLINE';
+    this.lastFailureTime = Date.now();
+    this.lastErrorMessage = message;
+    this.lastErrorReason = 'AUTHENTICATION_ERROR';
+    this.logProviderError(status, 'AUTHENTICATION_ERROR', message);
+  }
+
+  public resetCooldown(): void {
+    this.isRateLimited = false;
+    this.rateLimitCooldownUntil = 0;
+    this.consecutiveFailures = 0;
+    this.requestTimestamps = [];
+    this.state = 'CONNECTING';
+    console.log('[FinnhubProvider] Cooldown manually reset.');
+  }
+
+  /**
+   * Performs an active, lightweight server-side health check against Finnhub API (Requirement 4 & 5).
+   * Uses BTC/USD (`BINANCE:BTCUSDT`) or `QQQ` which are fully supported on Finnhub free tier.
+   */
+  public async checkHealth(): Promise<HealthCheckResult> {
+    const startTime = Date.now();
+    this.lastTestedSymbol = 'BINANCE:BTCUSDT';
+
+    if (!this.isConfigured) {
+      this.state = 'OFFLINE';
+      this.lastErrorReason = 'UNCONFIGURED';
+      return {
+        healthy: false,
+        state: 'OFFLINE',
+        latencyMs: 0,
+        testedSymbol: this.lastTestedSymbol,
+        errorReason: 'FINNHUB_API_KEY is not configured',
+      };
+    }
+
+    try {
+      this.state = 'CONNECTING';
+      const apiKey = this.getApiKey();
+      const url = `${this.baseUrl}/quote?symbol=BINANCE:BTCUSDT&token=${encodeURIComponent(apiKey)}`;
+
+      const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      const latencyMs = Date.now() - startTime;
+
+      if (res.status === 401 || res.status === 403) {
+        this.handleAuthFailure(res.status, 'Invalid or unauthorized Finnhub API key');
+        return {
+          healthy: false,
+          state: 'OFFLINE',
+          latencyMs,
+          testedSymbol: this.lastTestedSymbol,
+          errorReason: 'AUTHENTICATION_ERROR',
+        };
+      }
+
+      if (res.status === 429) {
+        this.handleRateLimitHit('HTTP 429 on health check');
+        return {
+          healthy: false,
+          state: 'RATE_LIMITED',
+          latencyMs,
+          testedSymbol: this.lastTestedSymbol,
+          errorReason: 'RATE_LIMIT',
+        };
+      }
+
+      if (!res.ok) {
+        this.handleTransientFailure(res.status, 'SERVER_ERROR', `HTTP ${res.status}`);
+        return {
+          healthy: false,
+          state: 'COOLDOWN',
+          latencyMs,
+          testedSymbol: this.lastTestedSymbol,
+          errorReason: 'SERVER_ERROR',
+        };
+      }
+
+      const data = await res.json();
+      const currentPrice = typeof data.c === 'number' ? data.c : parseFloat(data.c);
+
+      if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+        this.lastFailureTime = Date.now();
+        this.lastErrorReason = 'INVALID_DATA';
+        this.state = 'ERROR';
+        return {
+          healthy: false,
+          state: 'ERROR',
+          latencyMs,
+          testedSymbol: this.lastTestedSymbol,
+          errorReason: 'INVALID_DATA: Finnhub quote returned zero or non-finite price',
+        };
+      }
+
+      // Valid response verified
+      this.state = 'CONNECTED';
+      this.lastSuccessTime = Date.now();
+      this.consecutiveFailures = 0;
+      this.isRateLimited = false;
+      this.rateLimitCooldownUntil = 0;
+
+      return {
+        healthy: true,
+        state: 'CONNECTED',
+        latencyMs,
+        testedSymbol: this.lastTestedSymbol,
+        price: currentPrice,
+        timestamp: (data.t ? data.t * 1000 : Date.now()),
+      };
+    } catch (err: any) {
+      const latencyMs = Date.now() - startTime;
+      const isTimeout = err.name === 'AbortError' || err.name === 'TimeoutError' || err.message?.includes('timeout');
+      const reason: ProviderErrorReason = isTimeout ? 'NETWORK_TIMEOUT' : 'SERVER_ERROR';
+
+      this.handleTransientFailure(0, reason, err.message || 'Network error');
+      return {
+        healthy: false,
+        state: 'COOLDOWN',
+        latencyMs,
+        testedSymbol: this.lastTestedSymbol,
+        errorReason: reason,
+      };
+    }
   }
 
   /**
@@ -114,21 +307,22 @@ export class FinnhubProvider implements MarketDataProvider {
     symbol: string;
     endpointType: 'forex' | 'crypto' | 'stock';
     fallbackSymbol?: string;
+    isForexPlanRestricted?: boolean;
   } {
     const cleanSym = asset.symbol.toUpperCase().replace(/[-_]/g, '/');
 
     switch (cleanSym) {
       // Forex
       case 'EUR/USD':
-        return { symbol: 'OANDA:EUR_USD', endpointType: 'forex', fallbackSymbol: 'FX:EURUSD' };
+        return { symbol: 'OANDA:EUR_USD', endpointType: 'forex', fallbackSymbol: 'FX:EURUSD', isForexPlanRestricted: true };
       case 'GBP/USD':
-        return { symbol: 'OANDA:GBP_USD', endpointType: 'forex', fallbackSymbol: 'FX:GBPUSD' };
+        return { symbol: 'OANDA:GBP_USD', endpointType: 'forex', fallbackSymbol: 'FX:GBPUSD', isForexPlanRestricted: true };
       case 'USD/JPY':
-        return { symbol: 'OANDA:USD_JPY', endpointType: 'forex', fallbackSymbol: 'FX:USDJPY' };
+        return { symbol: 'OANDA:USD_JPY', endpointType: 'forex', fallbackSymbol: 'FX:USDJPY', isForexPlanRestricted: true };
       case 'AUD/USD':
-        return { symbol: 'OANDA:AUD_USD', endpointType: 'forex', fallbackSymbol: 'FX:AUDUSD' };
+        return { symbol: 'OANDA:AUD_USD', endpointType: 'forex', fallbackSymbol: 'FX:AUDUSD', isForexPlanRestricted: true };
 
-      // Crypto
+      // Crypto (Free tier supported!)
       case 'BTC/USD':
         return { symbol: 'BINANCE:BTCUSDT', endpointType: 'crypto', fallbackSymbol: 'COINBASE:BTC-USD' };
       case 'ETH/USD':
@@ -136,13 +330,13 @@ export class FinnhubProvider implements MarketDataProvider {
       case 'SOL/USD':
         return { symbol: 'BINANCE:SOLUSDT', endpointType: 'crypto', fallbackSymbol: 'COINBASE:SOL-USD' };
 
-      // Commodities (Gold / Silver)
+      // Commodities (Gold / Silver ETFs)
       case 'XAU/USD':
-        return { symbol: 'OANDA:XAU_USD', endpointType: 'forex', fallbackSymbol: 'GLD' };
+        return { symbol: 'GLD', endpointType: 'stock', fallbackSymbol: 'OANDA:XAU_USD' };
       case 'XAG/USD':
-        return { symbol: 'OANDA:XAG_USD', endpointType: 'forex', fallbackSymbol: 'SLV' };
+        return { symbol: 'SLV', endpointType: 'stock', fallbackSymbol: 'OANDA:XAG_USD' };
 
-      // Indices
+      // Indices (US ETFs)
       case 'NAS100':
         return { symbol: 'QQQ', endpointType: 'stock' };
       case 'SPX500':
@@ -153,7 +347,7 @@ export class FinnhubProvider implements MarketDataProvider {
       default:
         if (asset.assetClass === 'FOREX') {
           const formatted = cleanSym.replace('/', '_');
-          return { symbol: `OANDA:${formatted}`, endpointType: 'forex' };
+          return { symbol: `OANDA:${formatted}`, endpointType: 'forex', isForexPlanRestricted: true };
         }
         if (asset.assetClass === 'CRYPTO') {
           const formatted = cleanSym.replace('/', '');
@@ -163,9 +357,6 @@ export class FinnhubProvider implements MarketDataProvider {
     }
   }
 
-  /**
-   * Translates internal Timeframe to Finnhub resolution string.
-   */
   private formatResolution(tf: Timeframe): string {
     switch (tf) {
       case 'M5':
@@ -175,7 +366,7 @@ export class FinnhubProvider implements MarketDataProvider {
       case 'H1':
         return '60';
       case 'H4':
-        return '60'; // Finnhub candle resolutions: 1, 5, 15, 30, 60, D, W, M
+        return '60';
       case 'D1':
         return 'D';
       default:
@@ -184,14 +375,14 @@ export class FinnhubProvider implements MarketDataProvider {
   }
 
   /**
-   * Retrieves real-time quote from Finnhub with caching and deduplication.
+   * Retrieves current market price quote with caching and deduplication.
    */
   public async getQuote(asset: Asset): Promise<MarketPrice> {
-    const cacheKey = `finnhub_quote_${asset.symbol}`;
+    const cacheKey = `quote_${asset.symbol}`;
     const cached = this.quoteCache.get(cacheKey);
     const now = Date.now();
 
-    if (cached && now - cached.timestamp < cached.ttlMs) {
+    if (cached && now - cached.timestamp < cached.ttlMs && cached.data.price > 0) {
       return cached.data;
     }
 
@@ -204,13 +395,19 @@ export class FinnhubProvider implements MarketDataProvider {
 
     try {
       const result = await fetchPromise;
-      if (result.price > 0 && result.status !== 'ERROR' && result.status !== 'UNAVAILABLE') {
+      if (result.price > 0) {
         this.quoteCache.set(cacheKey, {
           data: result,
           timestamp: Date.now(),
           ttlMs: 30000,
         });
-        this.lastSuccessTime = Date.now();
+      } else if (cached?.data && cached.data.price > 0) {
+        return {
+          ...cached.data,
+          status: 'STALE',
+          dataSource: 'Finnhub (Cached - Fallback)',
+          errorMessage: result.errorMessage || 'Finnhub temporary cooldown.',
+        };
       }
       return result;
     } finally {
@@ -223,9 +420,9 @@ export class FinnhubProvider implements MarketDataProvider {
     previousQuote?: MarketPrice
   ): Promise<MarketPrice> {
     const marketStatus = getAssetMarketStatus(asset.assetClass);
-    const apiKey = this.getApiKey();
 
     if (!this.isConfigured) {
+      this.state = 'OFFLINE';
       return {
         symbol: asset.symbol,
         displayName: asset.displayName,
@@ -250,7 +447,7 @@ export class FinnhubProvider implements MarketDataProvider {
         return {
           ...previousQuote,
           status: 'STALE',
-          dataSource: 'Finnhub (Cached - Rate Limit)',
+          dataSource: 'Finnhub (Cached - Cooldown)',
           errorMessage: rateCheck.reason,
         };
       }
@@ -267,19 +464,20 @@ export class FinnhubProvider implements MarketDataProvider {
         lastUpdate: new Date().toISOString(),
         marketStatus,
         dataSource: 'Finnhub',
-        status: 'RATE_LIMITED',
-        errorMessage: rateCheck.reason || 'Finnhub rate limit reached.',
+        status: this.isRateLimited ? 'RATE_LIMITED' : 'UNAVAILABLE',
+        errorMessage: rateCheck.reason || 'Finnhub rate limit or cooldown active',
       };
     }
 
+    const resolved = this.resolveFinnhubSymbol(asset);
+
     try {
       this.registerRequest();
-      const resolved = this.resolveFinnhubSymbol(asset);
 
-      // Finnhub quote endpoint: GET /api/v1/quote?symbol=...&token=...
-      const url = `${this.baseUrl}/quote?symbol=${encodeURIComponent(
-        resolved.symbol
-      )}&token=${encodeURIComponent(apiKey)}`;
+      const apiKey = this.getApiKey();
+      const url = `${this.baseUrl}/quote?symbol=${encodeURIComponent(resolved.symbol)}&token=${encodeURIComponent(
+        apiKey
+      )}`;
 
       const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
 
@@ -289,8 +487,8 @@ export class FinnhubProvider implements MarketDataProvider {
           return {
             ...previousQuote,
             status: 'STALE',
-            dataSource: 'Finnhub (Cached - Rate Limited)',
-            errorMessage: 'Finnhub API limit reached',
+            dataSource: 'Finnhub (Cached)',
+            errorMessage: 'Finnhub rate limit reached',
           };
         }
         return {
@@ -307,13 +505,32 @@ export class FinnhubProvider implements MarketDataProvider {
           marketStatus,
           dataSource: 'Finnhub',
           status: 'RATE_LIMITED',
-          errorMessage: 'Finnhub API limit reached',
+          errorMessage: 'Finnhub rate limit reached',
         };
       }
 
       if (res.status === 403 || res.status === 401) {
-        const msg = `Finnhub returned ${res.status}: Plan restriction or invalid credentials.`;
-        this.lastErrorMessage = msg;
+        // If this is a Forex pair on Finnhub free tier, it's a symbol limitation, not total offline!
+        if (resolved.isForexPlanRestricted || asset.assetClass === 'FOREX') {
+          return {
+            symbol: asset.symbol,
+            displayName: asset.displayName,
+            assetClass: asset.assetClass,
+            price: 0,
+            high24h: 0,
+            low24h: 0,
+            change24h: 0,
+            changePercent24h: 0,
+            timestamp: Date.now(),
+            lastUpdate: new Date().toISOString(),
+            marketStatus,
+            dataSource: 'Finnhub',
+            status: 'UNAVAILABLE',
+            errorMessage: `Finnhub free tier does not include real-time Forex feed for ${asset.symbol}`,
+          };
+        }
+
+        this.handleAuthFailure(res.status, 'Unauthorized Finnhub API Key');
         return {
           symbol: asset.symbol,
           displayName: asset.displayName,
@@ -327,34 +544,20 @@ export class FinnhubProvider implements MarketDataProvider {
           lastUpdate: new Date().toISOString(),
           marketStatus,
           dataSource: 'Finnhub',
-          status: 'UNAVAILABLE',
-          errorMessage: 'UNAVAILABLE FROM FINNHUB CURRENT PLAN',
+          status: 'ERROR',
+          errorMessage: 'AUTHENTICATION_ERROR: Invalid Finnhub API key',
         };
       }
 
       if (!res.ok) {
-        throw new Error(`Finnhub quote returned HTTP ${res.status}`);
+        this.handleTransientFailure(res.status, 'SERVER_ERROR', `HTTP ${res.status}`);
+        throw new Error(`Finnhub returned status ${res.status}`);
       }
 
       const data = await res.json();
+      const currentPrice = typeof data.c === 'number' ? data.c : parseFloat(data.c);
 
-      // Finnhub standard quote response format:
-      // { c: currentPrice, d: change, dp: percentChange, h: high, l: low, o: open, pc: prevClose, t: timestamp }
-      const price = typeof data.c === 'number' ? data.c : 0;
-      const high24h = typeof data.h === 'number' ? data.h : price;
-      const low24h = typeof data.l === 'number' ? data.l : price;
-      const change = typeof data.d === 'number' ? data.d : 0;
-      const changePercent = typeof data.dp === 'number' ? data.dp : 0;
-      const timestamp = (typeof data.t === 'number' && data.t > 0 ? data.t * 1000 : Date.now());
-
-      // If price is 0 or all fields are 0, Finnhub didn't find data for this symbol
-      if (price <= 0) {
-        // If it's a forex or commodity pair, try fetching the last candle close as fallback
-        const candleFallback = await this.fetchCandleQuoteFallback(asset, resolved, apiKey);
-        if (candleFallback) {
-          return candleFallback;
-        }
-
+      if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
         return {
           symbol: asset.symbol,
           displayName: asset.displayName,
@@ -369,35 +572,59 @@ export class FinnhubProvider implements MarketDataProvider {
           marketStatus,
           dataSource: 'Finnhub',
           status: 'UNAVAILABLE',
-          errorMessage: `No market quote returned from Finnhub for ${resolved.symbol}`,
+          errorMessage: `Price unavailable for ${asset.symbol} on Finnhub`,
         };
       }
 
-      const quoteResult: MarketPrice = {
+      // Success
+      this.state = 'CONNECTED';
+      this.lastSuccessTime = Date.now();
+      this.consecutiveFailures = 0;
+
+      const high24h = typeof data.h === 'number' && data.h > 0 ? data.h : currentPrice * 1.005;
+      const low24h = typeof data.l === 'number' && data.l > 0 ? data.l : currentPrice * 0.995;
+      const prevClose = typeof data.pc === 'number' && data.pc > 0 ? data.pc : currentPrice;
+      const change24h = typeof data.d === 'number' ? data.d : currentPrice - prevClose;
+      const changePercent24h = typeof data.dp === 'number' ? data.dp : (prevClose > 0 ? (change24h / prevClose) * 100 : 0);
+      const quoteTime = data.t ? data.t * 1000 : Date.now();
+
+      const ageMs = Date.now() - quoteTime;
+      const status: MarketDataStatus =
+        marketStatus === 'WEEKEND'
+          ? 'OFFLINE'
+          : ageMs > (asset.assetClass === 'CRYPTO' ? 10 * 60 * 1000 : 30 * 60 * 1000)
+          ? 'STALE'
+          : 'LIVE';
+
+      return {
         symbol: asset.symbol,
         displayName: asset.displayName,
         assetClass: asset.assetClass,
-        price,
+        price: currentPrice,
+        bid: currentPrice * 0.9999,
+        ask: currentPrice * 1.0001,
         high24h,
         low24h,
-        change24h: change,
-        changePercent24h: changePercent,
-        timestamp,
-        lastUpdate: new Date(timestamp).toISOString(),
+        change24h,
+        changePercent24h,
+        timestamp: quoteTime,
+        lastUpdate: new Date(quoteTime).toLocaleTimeString(),
         marketStatus,
-        dataSource: 'Finnhub',
-        status: 'LIVE',
+        dataSource: `Finnhub (Live Fallback)`,
+        status,
+        exchange: 'Finnhub',
       };
+    } catch (error: any) {
+      const isTimeout = error.name === 'AbortError' || error.name === 'TimeoutError' || error.message?.includes('timeout');
+      const reason: ProviderErrorReason = isTimeout ? 'NETWORK_TIMEOUT' : 'SERVER_ERROR';
+      this.handleTransientFailure(0, reason, error.message);
 
-      return quoteResult;
-    } catch (err: any) {
-      this.lastErrorMessage = err.message || 'Finnhub quote network failure';
-      if (previousQuote && previousQuote.price > 0) {
+      if (previousQuote) {
         return {
           ...previousQuote,
           status: 'STALE',
-          dataSource: 'Finnhub (Cached - Network Failure)',
-          errorMessage: this.lastErrorMessage,
+          dataSource: 'Finnhub (Cached)',
+          errorMessage: error.message,
         };
       }
       return {
@@ -414,83 +641,33 @@ export class FinnhubProvider implements MarketDataProvider {
         marketStatus,
         dataSource: 'Finnhub',
         status: 'ERROR',
-        errorMessage: this.lastErrorMessage,
+        errorMessage: 'Network error communicating with Finnhub API',
       };
     }
   }
 
   /**
-   * Fallback for Forex/Commodities where /quote may not return values but /forex/candle or /crypto/candle has recent data.
-   */
-  private async fetchCandleQuoteFallback(
-    asset: Asset,
-    resolved: { symbol: string; endpointType: 'forex' | 'crypto' | 'stock'; fallbackSymbol?: string },
-    apiKey: string
-  ): Promise<MarketPrice | null> {
-    try {
-      const endpoint =
-        resolved.endpointType === 'forex'
-          ? 'forex/candle'
-          : resolved.endpointType === 'crypto'
-          ? 'crypto/candle'
-          : 'stock/candle';
-
-      const to = Math.floor(Date.now() / 1000);
-      const from = to - 86400 * 2; // Last 2 days
-
-      const candleUrl = `${this.baseUrl}/${endpoint}?symbol=${encodeURIComponent(
-        resolved.symbol
-      )}&resolution=15&from=${from}&to=${to}&token=${encodeURIComponent(apiKey)}`;
-
-      const res = await fetch(candleUrl, { signal: AbortSignal.timeout(4000) });
-      if (!res.ok) return null;
-
-      const data = await res.json();
-      if (data.s === 'ok' && Array.isArray(data.c) && data.c.length > 0) {
-        const lastIdx = data.c.length - 1;
-        const price = data.c[lastIdx];
-        const open = data.o[0] || price;
-        const high24h = Math.max(...data.h);
-        const low24h = Math.min(...data.l);
-        const change = price - open;
-        const changePercent = open > 0 ? (change / open) * 100 : 0;
-        const timestamp = (data.t[lastIdx] || to) * 1000;
-
-        return {
-          symbol: asset.symbol,
-          displayName: asset.displayName,
-          assetClass: asset.assetClass,
-          price,
-          high24h,
-          low24h,
-          change24h: change,
-          changePercent24h: changePercent,
-          timestamp,
-          lastUpdate: new Date(timestamp).toISOString(),
-          marketStatus: getAssetMarketStatus(asset.assetClass),
-          dataSource: 'Finnhub (Candle Series)',
-          status: 'LIVE',
-        };
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Retrieves historical OHLCV candles from Finnhub.
+   * Retrieves historical candles for an asset and timeframe.
    */
   public async getHistoricalCandles(
     asset: Asset,
     timeframe: Timeframe,
     numberOfCandles = 100
   ): Promise<MarketCandle[]> {
-    const cacheKey = `finnhub_candles_${asset.symbol}_${timeframe}_${numberOfCandles}`;
+    const cacheKey = `candles_${asset.symbol}_${timeframe}`;
     const cached = this.candleCache.get(cacheKey);
     const now = Date.now();
 
-    if (cached && now - cached.timestamp < cached.ttlMs) {
+    const ttlMs =
+      timeframe === 'M5'
+        ? 30000
+        : timeframe === 'M15'
+        ? 60000
+        : timeframe === 'H1'
+        ? 180000
+        : 300000;
+
+    if (cached && now - cached.timestamp < cached.ttlMs && cached.data.length >= 10) {
       return cached.data;
     }
 
@@ -498,7 +675,7 @@ export class FinnhubProvider implements MarketDataProvider {
       return this.inFlightCandles.get(cacheKey)!;
     }
 
-    const fetchPromise = this.fetchCandlesInternal(asset, timeframe, numberOfCandles);
+    const fetchPromise = this.fetchCandlesInternal(asset, timeframe, numberOfCandles, cached?.data);
     this.inFlightCandles.set(cacheKey, fetchPromise);
 
     try {
@@ -507,9 +684,8 @@ export class FinnhubProvider implements MarketDataProvider {
         this.candleCache.set(cacheKey, {
           data: result,
           timestamp: Date.now(),
-          ttlMs: 30000,
+          ttlMs,
         });
-        this.lastSuccessTime = Date.now();
       }
       return result;
     } finally {
@@ -520,72 +696,78 @@ export class FinnhubProvider implements MarketDataProvider {
   private async fetchCandlesInternal(
     asset: Asset,
     timeframe: Timeframe,
-    numberOfCandles: number
+    numberOfCandles: number,
+    previousCandles?: MarketCandle[]
   ): Promise<MarketCandle[]> {
     if (!this.isConfigured) {
-      return [];
+      return previousCandles || [];
     }
 
     const rateCheck = this.checkRateLimit();
     if (!rateCheck.allowed) {
-      return [];
+      return previousCandles || [];
     }
+
+    const resolved = this.resolveFinnhubSymbol(asset);
 
     try {
       this.registerRequest();
+
       const apiKey = this.getApiKey();
-      const resolved = this.resolveFinnhubSymbol(asset);
       const resolution = this.formatResolution(timeframe);
-
-      const endpoint =
-        resolved.endpointType === 'forex'
-          ? 'forex/candle'
-          : resolved.endpointType === 'crypto'
-          ? 'crypto/candle'
-          : 'stock/candle';
-
-      const barSeconds =
+      const toTimestamp = Math.floor(Date.now() / 1000);
+      const candleSeconds =
         timeframe === 'M5'
           ? 300
           : timeframe === 'M15'
           ? 900
-          : timeframe === 'H1' || timeframe === 'H4'
+          : timeframe === 'H1'
           ? 3600
+          : timeframe === 'H4'
+          ? 14400
           : 86400;
 
-      const requestedBars = timeframe === 'H4' ? numberOfCandles * 4 : numberOfCandles;
-      const to = Math.floor(Date.now() / 1000);
-      // Multiply by 2.2 buffer to account for weekends / non-trading hours
-      const from = to - Math.floor(requestedBars * barSeconds * 2.2);
+      const fromTimestamp = toTimestamp - Math.max(numberOfCandles, 50) * candleSeconds * 2;
 
-      const url = `${this.baseUrl}/${endpoint}?symbol=${encodeURIComponent(
+      let candleEndpoint = 'stock/candle';
+      if (resolved.endpointType === 'crypto') {
+        candleEndpoint = 'crypto/candle';
+      } else if (resolved.endpointType === 'forex') {
+        candleEndpoint = 'forex/candle';
+      }
+
+      const url = `${this.baseUrl}/${candleEndpoint}?symbol=${encodeURIComponent(
         resolved.symbol
-      )}&resolution=${encodeURIComponent(resolution)}&from=${from}&to=${to}&token=${encodeURIComponent(
-        apiKey
-      )}`;
+      )}&resolution=${resolution}&from=${fromTimestamp}&to=${toTimestamp}&token=${encodeURIComponent(apiKey)}`;
 
       const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
 
       if (res.status === 429) {
-        this.handleRateLimitHit('Finnhub Candle Rate Limit (HTTP 429)');
-        return [];
+        this.handleRateLimitHit('HTTP 429 on candles request');
+        return previousCandles || [];
+      }
+
+      if (res.status === 403 || res.status === 401) {
+        return previousCandles || [];
       }
 
       if (!res.ok) {
-        throw new Error(`Finnhub candle endpoint returned HTTP ${res.status}`);
+        this.handleTransientFailure(res.status, 'SERVER_ERROR', `HTTP ${res.status}`);
+        return previousCandles || [];
       }
 
       const data = await res.json();
 
-      // Finnhub candle schema: { c: [], h: [], l: [], o: [], s: 'ok'|'no_data', t: [], v: [] }
       if (data.s !== 'ok' || !Array.isArray(data.t) || data.t.length === 0) {
-        return [];
+        return previousCandles || [];
       }
 
-      const rawCandles: MarketCandle[] = [];
-      const len = data.t.length;
+      this.state = 'CONNECTED';
+      this.lastSuccessTime = Date.now();
+      this.consecutiveFailures = 0;
 
-      for (let i = 0; i < len; i++) {
+      const rawCandles: MarketCandle[] = [];
+      for (let i = 0; i < data.t.length; i++) {
         const t = data.t[i] * 1000;
         const open = data.o[i];
         const high = data.h[i];
@@ -617,25 +799,21 @@ export class FinnhubProvider implements MarketDataProvider {
         }
       }
 
-      // If H4 was requested and we fetched 60m candles, aggregate into 4H candles
       let finalCandles = rawCandles;
       if (timeframe === 'H4' && rawCandles.length > 0) {
         finalCandles = this.aggregateCandles(rawCandles, 4, 'H4', asset.symbol);
       }
 
-      // Validate candle sequence
-      const validated = validateMarketCandles(finalCandles, asset.assetClass, timeframe);
+      const validated = validateMarketCandles(finalCandles, asset.symbol, timeframe, asset.assetClass);
       return validated.cleanCandles.slice(-numberOfCandles);
     } catch (err: any) {
-      this.lastErrorMessage = err.message || 'Finnhub candle fetch failed';
-      console.warn(`[FinnhubProvider] Failed to fetch candles for ${asset.symbol}:`, err.message);
-      return [];
+      const isTimeout = err.name === 'AbortError' || err.name === 'TimeoutError' || err.message?.includes('timeout');
+      const reason: ProviderErrorReason = isTimeout ? 'NETWORK_TIMEOUT' : 'SERVER_ERROR';
+      this.handleTransientFailure(0, reason, err.message);
+      return previousCandles || [];
     }
   }
 
-  /**
-   * Resamples / aggregates smaller timeframe candles into larger timeframe candles (e.g. 1H -> 4H).
-   */
   private aggregateCandles(
     candles: MarketCandle[],
     factor: number,
@@ -673,39 +851,74 @@ export class FinnhubProvider implements MarketDataProvider {
     return aggregated;
   }
 
-  public async getProviderStatus(): Promise<ProviderStatusInfo> {
+  /**
+   * Retrieves detailed SingleProviderStatus (Requirement 11)
+   */
+  public async getSingleStatus(): Promise<SingleProviderStatus> {
     const now = Date.now();
-    const isConfigured = this.isConfigured;
+    const currentState = this.getState();
+    const activeMinuteRequests = this.requestTimestamps.filter((t) => now - t < 60000).length;
+    const cooldownRemainingSec = this.rateLimitCooldownUntil > now ? Math.ceil((this.rateLimitCooldownUntil - now) / 1000) : null;
 
-    let status: 'ONLINE' | 'RATE_LIMITED' | 'DEGRADED' | 'UNCONFIGURED' | 'ERROR' = 'ONLINE';
-    let message = 'Finnhub live secondary market data stream active';
+    let legacyStatus: SingleProviderStatus['status'] = 'ONLINE';
+    let message = 'Finnhub secondary live market data stream active';
 
-    if (!isConfigured) {
-      status = 'UNCONFIGURED';
+    if (!this.isConfigured) {
+      legacyStatus = 'UNCONFIGURED';
       message = 'FINNHUB_API_KEY is not configured in environment.';
-    } else if (this.isRateLimited) {
-      status = 'RATE_LIMITED';
-      message = `Finnhub rate limit active. Cooldown until ${new Date(
-        this.rateLimitCooldownUntil
-      ).toLocaleTimeString()}`;
-    } else if (this.lastErrorMessage && now - this.lastCheckedTime < 60000) {
-      status = 'DEGRADED';
-      message = `Finnhub recent notice: ${this.lastErrorMessage}`;
+    } else if (currentState === 'RATE_LIMITED') {
+      legacyStatus = 'RATE_LIMITED';
+      message = `Finnhub rate limit active (${cooldownRemainingSec || 0}s remaining).`;
+    } else if (currentState === 'COOLDOWN') {
+      legacyStatus = 'COOLDOWN';
+      message = `Transient backoff active (${cooldownRemainingSec || 0}s remaining): ${this.lastErrorMessage || 'Retrying'}`;
+    } else if (currentState === 'OFFLINE') {
+      legacyStatus = 'OFFLINE';
+      message = this.lastErrorMessage || 'Finnhub is offline or unauthenticated.';
+    } else if (currentState === 'DEGRADED') {
+      legacyStatus = 'DEGRADED';
+      message = 'Approaching minute rate limit.';
     }
 
     return {
-      provider: this.name,
-      configured: isConfigured,
-      status,
+      name: this.name,
+      configured: this.isConfigured,
+      state: currentState,
+      status: legacyStatus,
       message,
-      lastChecked: this.lastCheckedTime || now,
+      lastSuccess: this.lastSuccessTime ? new Date(this.lastSuccessTime).toISOString() : null,
+      lastFailure: this.lastFailureTime ? new Date(this.lastFailureTime).toISOString() : null,
+      lastError: this.lastErrorMessage,
+      lastErrorReason: this.lastErrorReason || undefined,
+      cooldownUntil: this.rateLimitCooldownUntil > now ? this.rateLimitCooldownUntil : null,
+      cooldownRemainingSec: cooldownRemainingSec || undefined,
+      lastChecked: now,
       rateLimitStats: {
-        minuteRequests: this.requestTimestamps.filter((t) => now - t < 60000).length,
+        minuteRequests: activeMinuteRequests,
         minuteLimit: this.MINUTE_LIMIT,
         dailyRequests: this.dailyRequestCount,
         dailyLimit: this.DAILY_LIMIT,
         isLimitReached: this.isRateLimited,
       },
+    };
+  }
+
+  public async getProviderStatus(): Promise<ProviderStatusInfo> {
+    const single = await this.getSingleStatus();
+    return {
+      provider: this.name,
+      configured: this.isConfigured,
+      activeProvider: this.name,
+      marketFeed: single.state === 'CONNECTED' ? 'LIVE' : single.state === 'RATE_LIMITED' ? 'COOLDOWN' : 'OFFLINE',
+      state: single.state,
+      status: single.status,
+      message: single.message,
+      lastChecked: single.lastChecked,
+      providers: {
+        twelveData: single,
+        finnhub: single,
+      },
+      rateLimitStats: single.rateLimitStats,
     };
   }
 

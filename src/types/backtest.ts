@@ -110,7 +110,12 @@ export interface PerformanceStats {
   medianR: number;
   grossWinningR: number;
   grossLosingR: number;
+  grossTotalR: number;
+  netTotalR: number;
   profitFactor: number;
+  grossProfitFactor: number;
+  netProfitFactor: number;
+  totalCostImpactR: number;
   averageWinR: number;
   averageLossR: number;
   expectancy: number; // in R per trade: (winRate/100 * avgWinR) - (lossRate/100 * avgLossR)
@@ -122,6 +127,8 @@ export interface PerformanceStats {
   averageTradeDurationMinutes: number;
   bestTradeR: number;
   worstTradeR: number;
+  largestWinR: number;
+  largestLossR: number;
   ignoredSignalsCount: number;
 }
 
@@ -135,6 +142,7 @@ export interface ConfidenceBucketMetric {
   averageR: number;
   expectancy: number;
   profitFactor: number;
+  maxDrawdownR: number;
 }
 
 export interface RRBucketMetric {
@@ -183,6 +191,7 @@ export interface AssetMetric {
   averageR: number;
   expectancy: number;
   profitFactor: number;
+  maxDrawdownR: number;
 }
 
 export interface TimeframeMetric {
@@ -194,6 +203,8 @@ export interface TimeframeMetric {
   totalR: number;
   averageR: number;
   expectancy: number;
+  profitFactor: number;
+  maxDrawdownR: number;
 }
 
 export interface DataQualityReport {
@@ -236,6 +247,13 @@ export interface BacktestReport {
   regimeBreakdown: MarketRegimeMetric[];
   assetBreakdown: AssetMetric[];
   timeframeBreakdown: TimeframeMetric[];
+  bestPerformingAsset?: { symbol: string; winRate: number; totalR: number; expectancy: number };
+  worstPerformingAsset?: { symbol: string; winRate: number; totalR: number; expectancy: number };
+  bestPerformingStrategy?: { strategy: string; winRate: number; totalR: number; expectancy: number };
+  worstPerformingStrategy?: { strategy: string; winRate: number; totalR: number; expectancy: number };
+  bestPerformingTimeframe?: { timeframe: string; winRate: number; totalR: number; expectancy: number };
+  worstPerformingTimeframe?: { timeframe: string; winRate: number; totalR: number; expectancy: number };
+  monteCarlo?: MonteCarloSimulationResult;
   executionSummary: {
     durationMs: number;
     evaluatedCandles: number;
@@ -257,6 +275,48 @@ export interface TestCaseResult {
   details?: string;
 }
 
+export interface MonteCarloSimulationResult {
+  iterations: number;
+  seed: number;
+  drawdownPercentiles: {
+    p5: number;
+    p25: number;
+    p50: number;
+    p75: number;
+    p95: number;
+    max: number;
+  };
+  losingStreakPercentiles: {
+    p5: number;
+    p50: number;
+    p95: number;
+    max: number;
+  };
+  endingEquityPercentiles: {
+    p5: number;
+    p50: number;
+    p95: number;
+  };
+  riskOfRuinPercent: number;
+  probabilityDrawdownAbove10R: number;
+  probabilityDrawdownAbove15R: number;
+  probabilityDrawdownAbove20R: number;
+  simulatedCurves: {
+    id: number;
+    path: number[];
+  }[];
+}
+
+export interface MultiAssetBacktestReport {
+  id: string;
+  timestamp: number;
+  config: BacktestConfig;
+  overallMetrics: PerformanceStats;
+  portfolioReport: BacktestReport;
+  assetReports: Record<string, BacktestReport | { error: string; symbol: string }>;
+  monteCarlo?: MonteCarloSimulationResult;
+}
+
 export interface BacktestSuiteResult {
   timestamp: number;
   totalTests: number;
@@ -266,3 +326,4 @@ export interface BacktestSuiteResult {
   results: TestCaseResult[];
   executionDurationMs: number;
 }
+

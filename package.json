@@ -9,8 +9,9 @@
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx test/signalLifecycle.test.ts && tsx server/tests/providerFailover.test.ts && tsx test/continuousRefresh.test.ts",
-    "test:lifecycle": "tsx test/signalLifecycle.test.ts"
+    "test": "tsx test/signalLifecycle.test.ts && tsx server/tests/providerFailover.test.ts && tsx test/continuousRefresh.test.ts && tsx test/historicalBacktest.test.ts",
+    "test:lifecycle": "tsx test/signalLifecycle.test.ts",
+    "test:backtest": "tsx test/historicalBacktest.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

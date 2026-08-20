@@ -16,6 +16,8 @@ import {
   generateRegimeBreakdown,
   generateAssetBreakdown,
   generateTimeframeBreakdown,
+  computePerformerHighlights,
+  runMonteCarloSimulation,
 } from './metricsCalculator';
 import { generateSignalDecision } from '../signals/decisionEngine';
 
@@ -245,6 +247,8 @@ export function runEventBasedBacktest(
   const regimeBreakdown = generateRegimeBreakdown(executedTrades);
   const assetBreakdown = generateAssetBreakdown(executedTrades);
   const timeframeBreakdown = generateTimeframeBreakdown(executedTrades, config.timeframe);
+  const performers = computePerformerHighlights(assetBreakdown, strategyBreakdown, timeframeBreakdown);
+  const monteCarlo = executedTrades.length > 0 ? runMonteCarloSimulation(executedTrades, 1000, 42) : undefined;
 
   const durationMs = Date.now() - startTime;
 
@@ -264,6 +268,13 @@ export function runEventBasedBacktest(
     regimeBreakdown,
     assetBreakdown,
     timeframeBreakdown,
+    bestPerformingAsset: performers.bestPerformingAsset,
+    worstPerformingAsset: performers.worstPerformingAsset,
+    bestPerformingStrategy: performers.bestPerformingStrategy,
+    worstPerformingStrategy: performers.worstPerformingStrategy,
+    bestPerformingTimeframe: performers.bestPerformingTimeframe,
+    worstPerformingTimeframe: performers.worstPerformingTimeframe,
+    monteCarlo,
     executionSummary: {
       durationMs,
       evaluatedCandles,
@@ -273,6 +284,126 @@ export function runEventBasedBacktest(
       skippedLowConfidence,
       skippedLowRR,
     },
+  };
+}
+
+/**
+ * Runs backtest sequentially across multiple instruments and aggregates results.
+ */
+export function runMultiAssetBacktest(
+  assetDatasets: { instrument: InstrumentConfig; candles: MarketCandle[] }[],
+  config: BacktestConfig
+): import('../types/backtest').MultiAssetBacktestReport {
+  const assetReports: Record<string, BacktestReport | { error: string; symbol: string }> = {};
+  const allExecutedTrades: BacktestTrade[] = [];
+
+  for (const { instrument, candles } of assetDatasets) {
+    try {
+      if (!candles || candles.length < (config.warmupPeriod || 30) + 5) {
+        assetReports[instrument.symbol] = {
+          error: 'INSUFFICIENT_HISTORICAL_DATA',
+          symbol: instrument.symbol,
+        };
+        continue;
+      }
+
+      const report = runEventBasedBacktest(
+        candles,
+        { ...config, symbol: instrument.symbol },
+        instrument
+      );
+      assetReports[instrument.symbol] = report;
+      allExecutedTrades.push(...report.trades);
+    } catch (err: any) {
+      assetReports[instrument.symbol] = {
+        error: err.message || 'Backtest execution error',
+        symbol: instrument.symbol,
+      };
+    }
+  }
+
+  // Sort combined trades chronologically
+  allExecutedTrades.sort((a, b) => a.entryTime - b.entryTime);
+  const overallMetrics = calculatePerformanceMetrics(allExecutedTrades);
+  const monteCarlo = overallMetrics.totalTrades > 0
+    ? runMonteCarloSimulation(allExecutedTrades, 1000, 42)
+    : undefined;
+
+  const inSampleTrades = allExecutedTrades.filter((t) => t.sampleType === 'IN_SAMPLE');
+  const outOfSampleTrades = allExecutedTrades.filter((t) => t.sampleType === 'OUT_OF_SAMPLE');
+
+  const totalCandles = assetDatasets.reduce((acc, d) => acc + (d.candles?.length || 0), 0);
+
+  const strategyBreakdown = generateStrategyBreakdown(allExecutedTrades);
+  const confidenceBuckets = generateConfidenceBuckets(allExecutedTrades);
+  const rrBuckets = generateRRBuckets(allExecutedTrades);
+  const regimeBreakdown = generateRegimeBreakdown(allExecutedTrades);
+  const assetBreakdown = generateAssetBreakdown(allExecutedTrades);
+  const timeframeBreakdown = generateTimeframeBreakdown(allExecutedTrades, config.timeframe);
+  const performers = computePerformerHighlights(assetBreakdown, strategyBreakdown, timeframeBreakdown);
+
+  const portfolioReport: BacktestReport = {
+    id: `PORTFOLIO-BT-${Date.now().toString(36).toUpperCase()}`,
+    timestamp: Date.now(),
+    config,
+    datasetInfo: {
+      symbol: 'ALL_PORTFOLIO',
+      timeframe: config.timeframe,
+      totalCandles,
+      startDate: new Date(allExecutedTrades[0]?.entryTime || Date.now()).toISOString(),
+      endDate: new Date(allExecutedTrades[allExecutedTrades.length - 1]?.exitTime || Date.now()).toISOString(),
+      inSampleCount: inSampleTrades.length,
+      outOfSampleCount: outOfSampleTrades.length,
+      source: 'MULTI_ASSET_HISTORICAL_ARCHIVES',
+      dataQuality: {
+        isValid: true,
+        totalCandles,
+        duplicateCount: 0,
+        outOfOrderCount: 0,
+        zeroOrNaNCandles: 0,
+        invalidGeometryCount: 0,
+        gapsDetected: 0,
+        warnings: [],
+        errors: [],
+      },
+    },
+    overallMetrics,
+    inSampleMetrics: calculatePerformanceMetrics(inSampleTrades),
+    outOfSampleMetrics: calculatePerformanceMetrics(outOfSampleTrades),
+    equityCurve: generateEquityCurve(allExecutedTrades),
+    trades: allExecutedTrades,
+    strategyBreakdown,
+    confidenceBuckets,
+    rrBuckets,
+    regimeBreakdown,
+    assetBreakdown,
+    timeframeBreakdown,
+    bestPerformingAsset: performers.bestPerformingAsset,
+    worstPerformingAsset: performers.worstPerformingAsset,
+    bestPerformingStrategy: performers.bestPerformingStrategy,
+    worstPerformingStrategy: performers.worstPerformingStrategy,
+    bestPerformingTimeframe: performers.bestPerformingTimeframe,
+    worstPerformingTimeframe: performers.worstPerformingTimeframe,
+    monteCarlo,
+    executionSummary: {
+      durationMs: 0,
+      evaluatedCandles: totalCandles,
+      generatedSignals: allExecutedTrades.length,
+      executedTrades: allExecutedTrades.length,
+      skippedOverlapping: 0,
+      skippedLowConfidence: 0,
+      skippedLowRR: 0,
+    },
+  };
+
+  return {
+    id: `MULTI-BT-${Date.now().toString(36).toUpperCase()}`,
+    timestamp: Date.now(),
+    config,
+    overallMetrics,
+    portfolioReport,
+    assetReports,
+    monteCarlo,
   };
 }
 
@@ -292,3 +423,4 @@ function matchesStrategyFilter(filter: StrategyFilter, breakdown: any): boolean 
       return true;
   }
 }
+

@@ -15,6 +15,7 @@ import {
 import { analyzeMarketWithGemini } from './geminiService';
 import { generateSignalDecision } from '../src/signals/decisionEngine';
 import { TradeType, Timeframe, RiskSettings } from '../src/types';
+import { getCandleState } from './config/intervals';
 
 const defaultRiskSettings: RiskSettings = {
   maxRiskPerTradePercent: 1.0,
@@ -57,13 +58,70 @@ export function createExpressApp(): express.Express {
     });
   });
 
-  // Provider status diagnostic
+  // Provider status diagnostic (Requirement 11)
   router.get('/market/provider-status', async (_req, res) => {
     try {
       const status = await marketDataManager.getProviderStatus();
       res.json(status);
     } catch (error: any) {
       res.status(500).json({ error: error.message || 'Failed to fetch provider status' });
+    }
+  });
+
+  // Manual Reconnect (Requirement 13)
+  router.post('/market/reconnect', async (_req, res) => {
+    try {
+      const status = await marketDataManager.reconnect();
+      res.json({
+        success: true,
+        message: 'Providers successfully reconnected and health checks completed.',
+        status,
+      });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message || 'Failed to reconnect providers' });
+    }
+  });
+
+  // Health check diagnostic test suite endpoint (Requirement 15)
+  router.post('/market/diagnostics/test-suite', async (_req, res) => {
+    try {
+      const testSymbols = ['BTC/USD', 'EUR/USD', 'XAU/USD', 'NAS100'];
+      const results: Record<string, any> = {};
+
+      const twelve = marketDataManager.getPrimaryProvider();
+      const finnhub = marketDataManager.getSecondaryProvider();
+
+      for (const sym of testSymbols) {
+        const asset = marketDataManager.getAsset(sym);
+        if (!asset) continue;
+
+        const [tdQuote, fhQuote] = await Promise.allSettled([
+          twelve.getQuote(asset),
+          finnhub.getQuote(asset),
+        ]);
+
+        results[sym] = {
+          twelveData:
+            tdQuote.status === 'fulfilled'
+              ? { status: tdQuote.value.status, price: tdQuote.value.price, error: tdQuote.value.errorMessage }
+              : { status: 'ERROR', error: tdQuote.reason?.message },
+          finnhub:
+            fhQuote.status === 'fulfilled'
+              ? { status: fhQuote.value.status, price: fhQuote.value.price, error: fhQuote.value.errorMessage }
+              : { status: 'ERROR', error: fhQuote.reason?.message },
+        };
+      }
+
+      const providerStatus = await marketDataManager.getProviderStatus();
+
+      res.json({
+        success: true,
+        timestamp: new Date().toISOString(),
+        providerStatus,
+        results,
+      });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
     }
   });
 
@@ -99,12 +157,21 @@ export function createExpressApp(): express.Express {
     }
   });
 
-  // Helper to extract symbol from request params (handles /quote/EUR/USD or /quote/EUR%2FUSD or /quote/EURUSD)
+  // Helper to extract symbol from request params (handles /quote/EUR/USD or /quote/EUR%2FUSD or /quote/EURUSD or ?symbol=EUR/USD)
   const extractSymbolParam = (req: express.Request): string => {
+    if (req.query.symbol && typeof req.query.symbol === 'string' && req.query.symbol.trim().length > 0) {
+      return req.query.symbol.trim();
+    }
     if (req.params.base && req.params.quote) {
       return `${req.params.base}/${req.params.quote}`;
     }
-    return req.params.symbol || '';
+    if (req.params.symbol) {
+      return decodeURIComponent(req.params.symbol);
+    }
+    if (req.params[0]) {
+      return decodeURIComponent(req.params[0]);
+    }
+    return 'EUR/USD';
   };
 
   // Market quote handlers
@@ -122,6 +189,7 @@ export function createExpressApp(): express.Express {
     }
   };
 
+  router.get('/market/quote', handleQuote);
   router.get('/market/quote/:symbol', handleQuote);
   router.get('/market/quote/:base/:quote', handleQuote);
 
@@ -148,8 +216,41 @@ export function createExpressApp(): express.Express {
     }
   };
 
+  router.get('/market/candles', handleCandles);
   router.get('/market/candles/:symbol', handleCandles);
   router.get('/market/candles/:base/:quote', handleCandles);
+
+  // Dedicated Backtesting Historical Candles handler with real provider synchronization
+  const handleBacktestCandles = async (req: express.Request, res: express.Response) => {
+    try {
+      const symbol = extractSymbolParam(req) || (req.query.symbol as string) || 'EUR/USD';
+      const tf = (req.query.timeframe as Timeframe) || 'M15';
+      const limit = parseInt(req.query.limit as string, 10) || 200;
+      const startDate = req.query.startDate as string | undefined;
+      const endDate = req.query.endDate as string | undefined;
+
+      const result = await marketDataManager.getBacktestHistoricalCandles(
+        symbol,
+        tf,
+        limit,
+        startDate,
+        endDate
+      );
+
+      res.json(result);
+    } catch (error: any) {
+      console.error('Error in backtest candles endpoint:', error);
+      res.status(500).json({
+        status: 'UNAVAILABLE',
+        error: `HISTORICAL DATA UNAVAILABLE: ${error.message || 'Internal server error'}`,
+        candles: [],
+      });
+    }
+  };
+
+  router.get('/backtest/historical-candles', handleBacktestCandles);
+  router.get('/backtest/historical-candles/:symbol', handleBacktestCandles);
+  router.get('/backtest/historical-candles/:base/:quote', handleBacktestCandles);
 
   // Multi-timeframe Signal Generation & Deep AI Analysis Scan
   router.post('/signals/scan', async (req, res) => {
@@ -253,8 +354,8 @@ export function createExpressApp(): express.Express {
 
       // Deep reasoning layer via Gemini
       const lastClose =
-        entryCandles && entryCandles.length > 0
-          ? entryCandles[entryCandles.length - 1].close
+        confirmedEntryCandles && confirmedEntryCandles.length > 0
+          ? confirmedEntryCandles[confirmedEntryCandles.length - 1].close
           : marketData.quote.price || 0;
 
       if (baseSignal.suggestedEntry === 0 && lastClose > 0) {
@@ -265,8 +366,8 @@ export function createExpressApp(): express.Express {
         baseSignal.takeProfit2 = lastClose;
       }
 
-      const rsiVal = entryCandles.length >= 14 ? 54 : 50;
-      const atrVal = entryCandles.length >= 14 ? instConfig.pipSize * 15 : lastClose * 0.002;
+      const rsiVal = confirmedEntryCandles.length >= 14 ? 54 : 50;
+      const atrVal = confirmedEntryCandles.length >= 14 ? instConfig.pipSize * 15 : lastClose * 0.002;
 
       const aiAnalysis = await analyzeMarketWithGemini({
         instrument: sym,

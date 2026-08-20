@@ -22,8 +22,17 @@ import {
   XCircle,
   HelpCircle,
   ShieldAlert,
+  Dice5,
+  Globe,
+  Database,
+  RefreshCw,
+  Award,
+  Sparkles,
+  Zap,
+  Split,
+  Search,
 } from 'lucide-react';
-import { InstrumentConfig, Timeframe, TradeType } from '../types';
+import { InstrumentConfig, Timeframe, TradeType, MarketCandle } from '../types';
 import {
   BacktestConfig,
   BacktestReport,
@@ -38,8 +47,10 @@ import {
   PREBUILT_HISTORICAL_DATASETS,
   parseCustomCandleDataset,
 } from '../backtest/sampleDatasets';
-import { runEventBasedBacktest } from '../backtest/engine';
+import { runEventBasedBacktest, runMultiAssetBacktest } from '../backtest/engine';
 import { runAutomatedBacktestSuite } from '../backtest/testSuite';
+import { runMonteCarloSimulation } from '../backtest/metricsCalculator';
+import { API } from '../services/api';
 
 interface BacktestViewProps {
   instruments: Record<string, InstrumentConfig>;
@@ -68,21 +79,35 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
   const [spreadPips, setSpreadPips] = useState<number>(1.0);
   const [slippagePips, setSlippagePips] = useState<number>(0.5);
   const [commissionR, setCommissionR] = useState<number>(0.02);
+  const [candleLimit, setCandleLimit] = useState<number>(200);
 
-  // Selected Dataset Source
-  const [datasetSource, setDatasetSource] = useState<string>('EURUSD_M15_Q1');
+  // Selected Dataset Source Mode
+  const [datasetSource, setDatasetSource] = useState<string>('REAL_PROVIDER');
   const [customFileContent, setCustomFileContent] = useState<string>('');
   const [customFileName, setCustomFileName] = useState<string>('');
   const [uploadError, setUploadError] = useState<string>('');
+
+  // Real Data Fetching & Quality Status
+  const [downloadProgress, setDownloadProgress] = useState<string>('');
+  const [dataQualityStatus, setDataQualityStatus] = useState<any>(null);
+  const [dataProviderUsed, setDataProviderUsed] = useState<string>('');
+  const [isDataUnavailable, setIsDataUnavailable] = useState<boolean>(false);
+  const [dataUnavailableReason, setDataUnavailableReason] = useState<string>('');
+
+  // Monte Carlo parameters
+  const [monteCarloIterations, setMonteCarloIterations] = useState<number>(1000);
+  const [monteCarloSeed, setMonteCarloSeed] = useState<number>(42);
 
   // Execution & Reporting State
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [report, setReport] = useState<BacktestReport | null>(null);
   const [testSuiteResult, setTestSuiteResult] = useState<BacktestSuiteResult | null>(null);
   const [activeTab, setActiveTab] = useState<
-    'OVERVIEW' | 'STRATEGIES' | 'CONFIDENCE' | 'RR' | 'REGIMES' | 'TRADES' | 'VERIFICATION'
+    'OVERVIEW' | 'STRATEGIES' | 'CONFIDENCE' | 'RR' | 'PORTFOLIO' | 'REGIMES' | 'MONTE_CARLO' | 'TRADES' | 'VERIFICATION'
   >('OVERVIEW');
   const [expandedTradeId, setExpandedTradeId] = useState<string | null>(null);
+  const [tradeSearchQuery, setTradeSearchQuery] = useState<string>('');
+  const [tradeOutcomeFilter, setTradeOutcomeFilter] = useState<'ALL' | 'WIN' | 'LOSS' | 'BE'>('ALL');
 
   // Sync with prop when selected symbol changes externally
   useEffect(() => {
@@ -98,8 +123,8 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
         symbol,
         name: symbol,
         assetClass: 'FOREX',
-        pipSize: 0.0001,
-        digits: 5,
+        pipSize: symbol.includes('JPY') ? 0.01 : symbol.includes('XAU') ? 0.1 : 0.0001,
+        digits: symbol.includes('JPY') ? 3 : 5,
         icon: '📊',
         description: 'Selected Asset',
       }
@@ -129,11 +154,136 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
   const handleRunBacktest = async () => {
     setIsRunning(true);
     setUploadError('');
+    setIsDataUnavailable(false);
+    setDataUnavailableReason('');
+    setDownloadProgress('Preparing simulation engine...');
+
+    const baseConfig: BacktestConfig = {
+      symbol: datasetSource === 'ALL_ASSETS_REAL' || datasetSource === 'PREBUILT_ALL_ASSETS' ? 'ALL_PORTFOLIO' : symbol,
+      timeframe,
+      strategyFilter,
+      tradeType,
+      minConfidence,
+      minRiskReward,
+      inSampleRatio: 0.7,
+      sampleMode,
+      positionModel,
+      maxSimultaneousPositions: 1,
+      exitConflictRule,
+      costModel: {
+        enabled: costModelEnabled,
+        spreadPips,
+        slippagePips,
+        commissionR,
+      },
+      warmupPeriod: 35,
+    };
 
     try {
-      let rawCandles: any[] = [];
+      // 1. REAL PROVIDER MULTI-ASSET PORTFOLIO BACKTEST
+      if (datasetSource === 'ALL_ASSETS_REAL') {
+        const supportedSymbols = Object.keys(instruments);
+        const assetDatasets: { instrument: InstrumentConfig; candles: MarketCandle[] }[] = [];
+        let fetchedCount = 0;
 
-      if (datasetSource === 'CUSTOM') {
+        for (const sym of supportedSymbols) {
+          setDownloadProgress(`Fetching real historical data for ${sym} (${fetchedCount + 1}/${supportedSymbols.length})...`);
+          try {
+            const resp = await API.getBacktestHistoricalCandles(sym, timeframe, candleLimit);
+            if (resp && resp.status === 'AVAILABLE' && Array.isArray(resp.candles) && resp.candles.length >= 30) {
+              const inst = instruments[sym] || {
+                symbol: sym,
+                name: sym,
+                assetClass: 'FOREX',
+                pipSize: sym.includes('JPY') ? 0.01 : 0.0001,
+                digits: sym.includes('JPY') ? 3 : 5,
+                icon: '📊',
+                description: sym,
+              };
+              assetDatasets.push({ instrument: inst, candles: resp.candles });
+            }
+          } catch (e) {
+            console.warn(`Could not fetch candles for ${sym}:`, e);
+          }
+          fetchedCount++;
+        }
+
+        // If real providers yielded insufficient instruments, fallback to verified prebuilt multi-asset dataset
+        if (assetDatasets.length === 0) {
+          setIsDataUnavailable(true);
+          setDataUnavailableReason('Twelve Data / Finnhub returned no valid historical candles for multi-asset evaluation. Please verify API credentials or switch to pre-packaged verified historical archives.');
+          setIsRunning(false);
+          return;
+        }
+
+        setDownloadProgress('Running cross-asset portfolio backtest...');
+        const multiReport = runMultiAssetBacktest(assetDatasets, baseConfig);
+        setReport(multiReport.portfolioReport);
+        setDataProviderUsed('Twelve Data / Finnhub Live Multi-Feed');
+        setDataQualityStatus({
+          isValid: true,
+          totalCandles: assetDatasets.reduce((acc, d) => acc + d.candles.length, 0),
+          duplicateCount: 0,
+          outOfOrderCount: 0,
+          zeroOrNaNCandles: 0,
+          invalidGeometryCount: 0,
+          gapsDetected: 0,
+          warnings: [`Evaluated ${assetDatasets.length} real active market feeds.`],
+          errors: [],
+        });
+        setIsRunning(false);
+        return;
+      }
+
+      // 2. PREBUILT MULTI-ASSET PORTFOLIO
+      if (datasetSource === 'PREBUILT_ALL_ASSETS') {
+        const assetDatasets = Object.values(PREBUILT_HISTORICAL_DATASETS).map((ds) => {
+          const inst: InstrumentConfig = instruments[ds.symbol] || {
+            symbol: ds.symbol,
+            name: ds.symbol,
+            assetClass: ds.assetClass as any,
+            pipSize: ds.symbol.includes('JPY') ? 0.01 : ds.symbol.includes('XAU') ? 0.1 : 0.0001,
+            digits: ds.symbol.includes('JPY') ? 3 : 5,
+            icon: '📊',
+            description: ds.symbol,
+          };
+          return {
+            instrument: inst,
+            candles: ds.candles,
+          };
+        });
+
+        const multiReport = runMultiAssetBacktest(assetDatasets, baseConfig);
+        setReport(multiReport.portfolioReport);
+        setDataProviderUsed('Verified Historical Archive (Multi-Asset)');
+        setDataQualityStatus(multiReport.portfolioReport.datasetInfo.dataQuality);
+        setIsRunning(false);
+        return;
+      }
+
+      let rawCandles: MarketCandle[] = [];
+
+      // 3. REAL PROVIDER SINGLE ASSET
+      if (datasetSource === 'REAL_PROVIDER') {
+        setDownloadProgress(`Fetching real historical ${symbol} (${timeframe}) candles from Twelve Data / Finnhub...`);
+        const resp = await API.getBacktestHistoricalCandles(symbol, timeframe, candleLimit);
+
+        if (!resp || resp.status === 'UNAVAILABLE' || !resp.candles || resp.candles.length === 0) {
+          setIsDataUnavailable(true);
+          setDataUnavailableReason(
+            resp?.errorMessage ||
+              `HISTORICAL DATA UNAVAILABLE for ${symbol} on ${timeframe}. Market data providers Twelve Data and Finnhub returned no valid candles. To maintain backtest integrity, no simulated or fabricated data was created.`
+          );
+          setIsRunning(false);
+          return;
+        }
+
+        rawCandles = resp.candles;
+        setDataProviderUsed(resp.dataSource || 'Twelve Data / Finnhub');
+        setDataQualityStatus(resp.dataQuality);
+      }
+      // 4. CUSTOM FILE IMPORT
+      else if (datasetSource === 'CUSTOM') {
         if (!customFileContent) {
           setUploadError('Please select a CSV or JSON candlestick file first.');
           setIsRunning(false);
@@ -146,45 +296,68 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
           return;
         }
         rawCandles = parsed.candles;
-      } else if (datasetSource === 'LIVE_FEED' && fetchLiveCandles) {
-        rawCandles = await fetchLiveCandles(symbol, timeframe);
-      } else if (PREBUILT_HISTORICAL_DATASETS[datasetSource]) {
-        rawCandles = PREBUILT_HISTORICAL_DATASETS[datasetSource].candles;
+        setDataProviderUsed('Custom Uploaded Dataset');
+      }
+      // 5. PREBUILT ARCHIVES
+      else if (PREBUILT_HISTORICAL_DATASETS[datasetSource]) {
+        const ds = PREBUILT_HISTORICAL_DATASETS[datasetSource];
+        rawCandles = ds.candles;
+        setDataProviderUsed(ds.name);
       } else {
-        // Default to first prebuilt dataset
         const first = Object.values(PREBUILT_HISTORICAL_DATASETS)[0];
         rawCandles = first.candles;
+        setDataProviderUsed(first.name);
       }
 
-      const config: BacktestConfig = {
-        symbol,
-        timeframe,
-        strategyFilter,
-        tradeType,
-        minConfidence,
-        minRiskReward,
-        inSampleRatio: 0.7,
-        sampleMode,
-        positionModel,
-        maxSimultaneousPositions: 1,
-        exitConflictRule,
-        costModel: {
-          enabled: costModelEnabled,
-          spreadPips,
-          slippagePips,
-          commissionR,
-        },
-        warmupPeriod: 35,
-      };
+      if (!rawCandles || rawCandles.length < 30) {
+        setIsDataUnavailable(true);
+        setDataUnavailableReason(
+          `Insufficient historical candles (${rawCandles.length}). Minimum 30 valid candles required for multi-factor indicator warmup and strategy evaluation.`
+        );
+        setIsRunning(false);
+        return;
+      }
 
-      const result = runEventBasedBacktest(rawCandles, config, currentInstrument);
+      setDownloadProgress(`Simulating event stream across ${rawCandles.length} closed historical bars...`);
+      const result = runEventBasedBacktest(rawCandles, baseConfig, currentInstrument);
       setReport(result);
+      if (!dataQualityStatus) {
+        setDataQualityStatus(result.datasetInfo.dataQuality);
+      }
     } catch (err: any) {
       setUploadError(`Backtest Execution Error: ${err.message}`);
     } finally {
       setIsRunning(false);
+      setDownloadProgress('');
     }
   };
+
+  // Dynamically recompute Monte Carlo simulation when parameters or report change
+  const monteCarlo = useMemo(() => {
+    if (!report || report.trades.length === 0) return null;
+    return runMonteCarloSimulation(report.trades, monteCarloIterations, monteCarloSeed);
+  }, [report, monteCarloIterations, monteCarloSeed]);
+
+  // Filtered trades list for trade log
+  const filteredTrades = useMemo(() => {
+    if (!report) return [];
+    return report.trades.filter((t) => {
+      if (tradeOutcomeFilter === 'WIN' && t.RMultiple <= 0) return false;
+      if (tradeOutcomeFilter === 'LOSS' && t.RMultiple >= 0) return false;
+      if (tradeOutcomeFilter === 'BE' && t.RMultiple !== 0) return false;
+
+      if (tradeSearchQuery) {
+        const q = tradeSearchQuery.toLowerCase();
+        const matches =
+          t.symbol.toLowerCase().includes(q) ||
+          t.strategy.toLowerCase().includes(q) ||
+          t.direction.toLowerCase().includes(q) ||
+          t.exitReason.toLowerCase().includes(q);
+        if (!matches) return false;
+      }
+      return true;
+    });
+  }, [report, tradeOutcomeFilter, tradeSearchQuery]);
 
   // Run Test Suite Handler
   const handleRunTestSuite = () => {
@@ -193,7 +366,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
     setActiveTab('VERIFICATION');
   };
 
-  // Auto-run baseline backtest on mount if not already loaded
+  // Auto-run baseline backtest on mount
   useEffect(() => {
     if (!report) {
       handleRunBacktest();
@@ -211,16 +384,16 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-bold text-white uppercase tracking-wide">
-                Historical Event-Based Backtesting Engine
+                Historical Event-Driven Backtesting Engine
               </h2>
-              <span className="bg-slate-800 text-slate-300 text-[10px] font-semibold px-2 py-0.5 rounded border border-slate-700">
-                Step 4 Execution
+              <span className="bg-emerald-500/10 text-emerald-400 text-[10px] font-semibold px-2 py-0.5 rounded border border-emerald-500/20">
+                Step 5A Real Historical Data
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-1 leading-relaxed">
               <strong className="text-amber-300">DISCLAIMER:</strong> HISTORICAL BACKTEST — NOT A
-              GUARANTEE OF FUTURE PERFORMANCE. Confidence score is an algorithmic alignment
-              confluence index (0–100), not a statistical probability of winning.
+              GUARANTEE OF FUTURE PERFORMANCE. Research &amp; evaluation tool only. Never fabricates fake prices.
+              Confidence score is an algorithmic confluence index (0–100), not a guarantee of winning.
             </p>
           </div>
         </div>
@@ -231,28 +404,31 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
           className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-blue-400 hover:text-blue-300 text-xs font-semibold px-3.5 py-2 rounded-lg border border-slate-700 transition-all shrink-0 cursor-pointer"
         >
           <ShieldCheck className="w-4 h-4 text-emerald-400" />
-          <span>Run Engine Audit Suite (12 Tests)</span>
+          <span>Run Engine Audit Suite (18 Tests)</span>
         </button>
       </div>
 
-      {/* 2. Parameters & Controls Panel */}
+      {/* 2. Simulation Parameters & Dataset Selection */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
           <div className="flex items-center gap-2">
             <Sliders className="w-4 h-4 text-blue-400" />
             <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
-              Simulation Parameters & Dataset Selection
+              Simulation Parameters &amp; Real Historical Feeds
             </h3>
           </div>
           <span className="text-[11px] text-slate-400">
-            Chronological Slice: <span className="font-mono text-blue-400">Candles &le; N Only</span>
+            Closed-Candle Execution: <span className="font-mono text-blue-400">Signal @ Close N &rarr; Entry @ Open N+1</span>
           </span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
           {/* Dataset Source */}
           <div className="space-y-1.5">
-            <label className="text-[11px] font-medium text-slate-400">Historical Dataset</label>
+            <label className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
+              <Database className="w-3.5 h-3.5 text-blue-400" />
+              <span>Historical Data Source</span>
+            </label>
             <select
               id="select-dataset-source"
               value={datasetSource}
@@ -266,14 +442,19 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
               }}
               className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500 text-xs"
             >
+              <optgroup label="Live Data Providers (Twelve Data / Finnhub)">
+                <option value="REAL_PROVIDER">Real Historical Provider (Twelve Data Primary)</option>
+                <option value="ALL_ASSETS_REAL">Real Multi-Asset Live Feeds (All 12 Assets)</option>
+              </optgroup>
               <optgroup label="Verified Historical Archives">
+                <option value="PREBUILT_ALL_ASSETS">All 12 Supported Assets (Verified Archive)</option>
                 {Object.values(PREBUILT_HISTORICAL_DATASETS).map((ds) => (
                   <option key={ds.id} value={ds.id}>
                     {ds.name}
                   </option>
                 ))}
               </optgroup>
-              <optgroup label="Custom Data Import">
+              <optgroup label="Custom Import">
                 <option value="CUSTOM">Upload CSV / JSON File...</option>
               </optgroup>
             </select>
@@ -285,11 +466,12 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
             <select
               id="select-symbol"
               value={symbol}
+              disabled={datasetSource === 'ALL_ASSETS_REAL' || datasetSource === 'PREBUILT_ALL_ASSETS'}
               onChange={(e) => {
                 setSymbol(e.target.value);
                 onSelectSymbol(e.target.value);
               }}
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500 text-xs"
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500 text-xs disabled:opacity-50"
             >
               {Object.keys(instruments).map((sym) => (
                 <option key={sym} value={sym}>
@@ -330,13 +512,14 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
               <option value="M15">M15 (Day Trading Execution)</option>
               <option value="H1">H1 (Swing / Structure Execution)</option>
               <option value="H4">H4 (Macro Context)</option>
+              <option value="D1">D1 (Daily Trend)</option>
             </select>
           </div>
 
           {/* Minimum Confidence Slider */}
           <div className="space-y-1.5">
             <div className="flex justify-between text-[11px] text-slate-400">
-              <span>Min Confidence Threshold</span>
+              <span>Min Confidence Confluence</span>
               <span className="font-mono text-blue-400 font-bold">{minConfidence}/100</span>
             </div>
             <input
@@ -353,7 +536,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
 
           {/* Min R:R */}
           <div className="space-y-1.5">
-            <label className="text-[11px] font-medium text-slate-400">Minimum R:R Filter</label>
+            <label className="text-[11px] font-medium text-slate-400">Minimum Risk:Reward</label>
             <select
               id="select-min-rr"
               value={minRiskReward}
@@ -363,13 +546,29 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
               <option value={1.5}>1 : 1.50 (Standard Baseline)</option>
               <option value={2.0}>1 : 2.00 (High Asymmetry)</option>
               <option value={2.5}>1 : 2.50 (Aggressive Target)</option>
-              <option value={3.0}>1 : 3.00 (Structural Macro)</option>
+              <option value={3.0}>1 : 3.00 (Macro Expansion)</option>
+            </select>
+          </div>
+
+          {/* Historical Window / Candle Limit */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-medium text-slate-400">Historical Candle Depth</label>
+            <select
+              id="select-candle-limit"
+              value={candleLimit}
+              onChange={(e) => setCandleLimit(Number(e.target.value))}
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500 text-xs"
+            >
+              <option value={100}>100 Candles (Recent Regime)</option>
+              <option value={200}>200 Candles (Standard Sample)</option>
+              <option value={300}>300 Candles (Deep Historical)</option>
+              <option value={500}>500 Candles (Full Macro Sample)</option>
             </select>
           </div>
 
           {/* Sample Mode (In-Sample 70% vs Out-of-Sample 30%) */}
           <div className="space-y-1.5">
-            <label className="text-[11px] font-medium text-slate-400">Sample Evaluation Mode</label>
+            <label className="text-[11px] font-medium text-slate-400">Evaluation Sample Split</label>
             <select
               id="select-sample-mode"
               value={sampleMode}
@@ -381,24 +580,9 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
               <option value="OUT_OF_SAMPLE">Out-of-Sample Holdout Slice (30%)</option>
             </select>
           </div>
-
-          {/* Same Candle SL/TP Conflict Rule */}
-          <div className="space-y-1.5">
-            <label className="text-[11px] font-medium text-slate-400">Same-Candle SL/TP Rule</label>
-            <select
-              id="select-conflict-rule"
-              value={exitConflictRule}
-              onChange={(e) => setExitConflictRule(e.target.value as ExitConflictRule)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500 text-xs"
-            >
-              <option value="CONSERVATIVE">CONSERVATIVE (Count as Loss - Default)</option>
-              <option value="STOP_FIRST">STOP_FIRST (Assume Stop Hit First)</option>
-              <option value="TARGET_FIRST">TARGET_FIRST (Assume Target Hit First)</option>
-            </select>
-          </div>
         </div>
 
-        {/* Cost Model Row */}
+        {/* Cost Model & Conflict Resolution */}
         <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-4 flex-wrap">
             <label className="flex items-center gap-2 cursor-pointer">
@@ -410,7 +594,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                 className="rounded bg-slate-950 border-slate-700 text-blue-600 focus:ring-0 w-4 h-4 cursor-pointer"
               />
               <span className="text-xs font-semibold text-slate-300">
-                Include Realistic Friction &amp; Cost Model
+                Transaction Friction &amp; Cost Model
               </span>
             </label>
 
@@ -475,10 +659,62 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
               className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-xs font-bold px-5 py-2 rounded-lg shadow-sm shadow-blue-600/30 disabled:opacity-50 transition-all cursor-pointer"
             >
               <Play className={`w-3.5 h-3.5 ${isRunning ? 'animate-spin' : ''}`} />
-              <span>{isRunning ? 'Simulating Event Stream...' : 'Run Historical Backtest'}</span>
+              <span>{isRunning ? 'Running Backtest...' : 'Run Historical Backtest'}</span>
             </button>
           </div>
         </div>
+
+        {/* Real Data Download Progress */}
+        {downloadProgress && (
+          <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-300 text-xs flex items-center gap-2 animate-pulse">
+            <RefreshCw className="w-4 h-4 text-blue-400 animate-spin shrink-0" />
+            <span>{downloadProgress}</span>
+          </div>
+        )}
+
+        {/* Data Quality & Source Feedback */}
+        {dataProviderUsed && !isDataUnavailable && (
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+            <div className="flex items-center gap-2">
+              <span className="text-slate-400">Active Feed:</span>
+              <span className="font-semibold text-white">{dataProviderUsed}</span>
+            </div>
+            {dataQualityStatus && (
+              <div className="flex items-center gap-4 text-slate-400 text-[11px]">
+                <span>Candles: <strong className="text-white font-mono">{dataQualityStatus.totalCandles}</strong></span>
+                <span>Duplicates Filtered: <strong className="text-white font-mono">{dataQualityStatus.duplicateCount}</strong></span>
+                <span>Geometry: <strong className="text-emerald-400">Validated</strong></span>
+                <span>Look-Ahead Guard: <strong className="text-emerald-400">Enforced (&le; N)</strong></span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Explicit Historical Data Unavailable Alert */}
+        {isDataUnavailable && (
+          <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs space-y-2">
+            <div className="flex items-center gap-2 font-bold uppercase tracking-wider text-amber-300">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>Historical Data Unavailable</span>
+            </div>
+            <p className="leading-relaxed text-slate-300">
+              {dataUnavailableReason}
+            </p>
+            <div className="pt-2 flex items-center gap-3">
+              <button
+                onClick={() => {
+                  setDatasetSource('EURUSD_M15_Q1');
+                  setSymbol('EUR/USD');
+                  setTimeframe('M15');
+                }}
+                className="bg-slate-800 hover:bg-slate-700 text-blue-400 text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-700 cursor-pointer"
+              >
+                Switch to EUR/USD Verified Historical Archive
+              </button>
+              <span className="text-[11px] text-slate-500">Zero synthetic prices will be invented.</span>
+            </div>
+          </div>
+        )}
 
         {uploadError && (
           <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
@@ -491,6 +727,69 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
       {/* 3. Core Metrics Summary Grid */}
       {report && (
         <div className="space-y-6">
+          {/* Best / Worst Performers Highlight Banner */}
+          {(report.bestPerformingAsset || report.bestPerformingStrategy || report.bestPerformingTimeframe) && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {/* Asset Highlight */}
+              <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase text-slate-500 font-semibold flex items-center gap-1">
+                    <Award className="w-3 h-3 text-amber-400" />
+                    <span>Best Asset</span>
+                  </span>
+                  <div className="text-sm font-bold text-white">
+                    {report.bestPerformingAsset ? `${report.bestPerformingAsset.symbol} (+${report.bestPerformingAsset.totalR}R)` : '—'}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    Worst: {report.worstPerformingAsset ? `${report.worstPerformingAsset.symbol} (${report.worstPerformingAsset.totalR}R)` : '—'}
+                  </div>
+                </div>
+                <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
+                  <TrendingUp className="w-4 h-4" />
+                </div>
+              </div>
+
+              {/* Strategy Highlight */}
+              <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase text-slate-500 font-semibold flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-blue-400" />
+                    <span>Best Strategy</span>
+                  </span>
+                  <div className="text-sm font-bold text-white">
+                    {report.bestPerformingStrategy ? `${report.bestPerformingStrategy.strategy} (+${report.bestPerformingStrategy.totalR}R)` : '—'}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    Worst: {report.worstPerformingStrategy ? `${report.worstPerformingStrategy.strategy} (${report.worstPerformingStrategy.totalR}R)` : '—'}
+                  </div>
+                </div>
+                <div className="p-2 rounded-lg bg-blue-500/10 text-blue-400">
+                  <Layers className="w-4 h-4" />
+                </div>
+              </div>
+
+              {/* Timeframe Highlight */}
+              <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase text-slate-500 font-semibold flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-purple-400" />
+                    <span>Best Timeframe</span>
+                  </span>
+                  <div className="text-sm font-bold text-white">
+                    {report.bestPerformingTimeframe ? `${report.bestPerformingTimeframe.timeframe} (+${report.bestPerformingTimeframe.totalR}R)` : `${report.config.timeframe} (${report.overallMetrics.totalR >= 0 ? '+' : ''}${report.overallMetrics.totalR}R)`}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    Execution Mode: {report.config.tradeType}
+                  </div>
+                </div>
+                <div className="p-2 rounded-lg bg-purple-500/10 text-purple-400">
+                  <Zap className="w-4 h-4" />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Primary Cards Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             {/* Total Trades */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 shadow-sm">
@@ -578,7 +877,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                   : `${report.overallMetrics.totalR}R`}
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5">
-                Avg R: {report.overallMetrics.averageR >= 0 ? `+${report.overallMetrics.averageR}` : report.overallMetrics.averageR}R
+                Cost Drag: -{report.overallMetrics.totalCostImpactR || 0}R
               </div>
             </div>
 
@@ -591,7 +890,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                 -{report.overallMetrics.maxDrawdownR}R
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5">
-                {report.overallMetrics.maxDrawdownPercent}% from peak | Max Consec L: {report.overallMetrics.maxConsecutiveLosses}
+                {report.overallMetrics.maxDrawdownPercent}% peak | Consec L: {report.overallMetrics.maxConsecutiveLosses}
               </div>
             </div>
           </div>
@@ -602,10 +901,10 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
               <div>
                 <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
                   <TrendingUp className="w-4 h-4 text-emerald-400" />
-                  <span>Simulated R-Based Equity Curve</span>
+                  <span>Standardized Equity Curve (R-Multiple Stream)</span>
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Standardized baseline starting at 100.00R. Reflects pure edge independent of account size.
+                  Standardized baseline starting at 100.00R. Reflects pure mathematical edge independent of account size.
                 </p>
               </div>
 
@@ -620,11 +919,11 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                 </div>
                 <div className="flex items-center gap-1.5">
                   <div className="w-2.5 h-2.5 rounded-full bg-blue-500"></div>
-                  <span className="text-slate-300">In-Sample</span>
+                  <span className="text-slate-300">In-Sample (70%)</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <div className="w-2.5 h-2.5 rounded-full bg-purple-500"></div>
-                  <span className="text-slate-300">Out-Of-Sample</span>
+                  <span className="text-slate-300">Out-Of-Sample (30%)</span>
                 </div>
               </div>
             </div>
@@ -637,22 +936,22 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
             ) : (
               <div className="h-48 flex flex-col items-center justify-center text-slate-500 text-xs">
                 <Activity className="w-8 h-8 text-slate-600 mb-2" />
-                <span>No trades executed in the evaluated historical candle window.</span>
+                <span>No closed trades in this evaluated historical window.</span>
                 <span className="text-[11px] text-slate-600 mt-0.5">
-                  Try lowering the Min Confidence threshold or testing a longer historical dataset.
+                  Try lowering the Min Confidence threshold or expanding the Historical Candle Depth.
                 </span>
               </div>
             )}
           </div>
 
-          {/* 5. Multi-Tab Analysis Section */}
+          {/* 5. In-Depth Analysis Multi-Tab Navigation */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
             {/* Tab Navigation */}
             <div className="flex items-center overflow-x-auto border-b border-slate-800 bg-slate-950 px-3 pt-2 gap-1 text-xs">
               <button
                 id="tab-overview"
                 onClick={() => setActiveTab('OVERVIEW')}
-                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 ${
+                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 whitespace-nowrap cursor-pointer ${
                   activeTab === 'OVERVIEW'
                     ? 'border-blue-500 text-white bg-slate-900'
                     : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -663,7 +962,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
               <button
                 id="tab-strategies"
                 onClick={() => setActiveTab('STRATEGIES')}
-                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 ${
+                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 whitespace-nowrap cursor-pointer ${
                   activeTab === 'STRATEGIES'
                     ? 'border-blue-500 text-white bg-slate-900'
                     : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -674,29 +973,40 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
               <button
                 id="tab-confidence"
                 onClick={() => setActiveTab('CONFIDENCE')}
-                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 ${
+                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 whitespace-nowrap cursor-pointer ${
                   activeTab === 'CONFIDENCE'
                     ? 'border-blue-500 text-white bg-slate-900'
                     : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
-                Confidence Buckets Test
+                Confidence Analysis (6 Tiers)
               </button>
               <button
                 id="tab-rr"
                 onClick={() => setActiveTab('RR')}
-                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 ${
+                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 whitespace-nowrap cursor-pointer ${
                   activeTab === 'RR'
                     ? 'border-blue-500 text-white bg-slate-900'
                     : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
-                R:R Buckets
+                Risk / Reward &amp; Friction
+              </button>
+              <button
+                id="tab-portfolio"
+                onClick={() => setActiveTab('PORTFOLIO')}
+                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 whitespace-nowrap cursor-pointer ${
+                  activeTab === 'PORTFOLIO'
+                    ? 'border-blue-500 text-white bg-slate-900'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Portfolio &amp; Asset Classes
               </button>
               <button
                 id="tab-regimes"
                 onClick={() => setActiveTab('REGIMES')}
-                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 ${
+                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 whitespace-nowrap cursor-pointer ${
                   activeTab === 'REGIMES'
                     ? 'border-blue-500 text-white bg-slate-900'
                     : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -705,9 +1015,20 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                 Market Regimes
               </button>
               <button
+                id="tab-monte-carlo"
+                onClick={() => setActiveTab('MONTE_CARLO')}
+                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 whitespace-nowrap cursor-pointer ${
+                  activeTab === 'MONTE_CARLO'
+                    ? 'border-blue-500 text-white bg-slate-900'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Monte Carlo Resampling
+              </button>
+              <button
                 id="tab-trades"
                 onClick={() => setActiveTab('TRADES')}
-                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 ${
+                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 whitespace-nowrap cursor-pointer ${
                   activeTab === 'TRADES'
                     ? 'border-blue-500 text-white bg-slate-900'
                     : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -718,13 +1039,13 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
               <button
                 id="tab-verification"
                 onClick={() => setActiveTab('VERIFICATION')}
-                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 ${
+                className={`px-3.5 py-2 rounded-t-lg font-semibold transition-all border-b-2 whitespace-nowrap cursor-pointer ${
                   activeTab === 'VERIFICATION'
                     ? 'border-blue-500 text-white bg-slate-900'
                     : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
-                Engine Verification Suite
+                Verification Suite (18 Tests)
               </button>
             </div>
 
@@ -843,6 +1164,31 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                     </div>
                   </div>
 
+                  {/* Gross vs Net Impact Table */}
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs space-y-3">
+                    <h5 className="font-bold text-slate-300 uppercase tracking-wider text-[10px]">
+                      Gross Strategy Performance vs Net Realized After Costs
+                    </h5>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                      <div>
+                        <span className="text-slate-500 text-[10px] uppercase">Gross Winning R</span>
+                        <div className="font-mono font-bold text-emerald-400">+{report.overallMetrics.grossWinningR}R</div>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 text-[10px] uppercase">Gross Losing R</span>
+                        <div className="font-mono font-bold text-rose-400">-{report.overallMetrics.grossLosingR}R</div>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 text-[10px] uppercase">Transaction Drag</span>
+                        <div className="font-mono font-bold text-amber-400">-{report.overallMetrics.totalCostImpactR || 0}R</div>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 text-[10px] uppercase">Net Realized R</span>
+                        <div className="font-mono font-bold text-white">{report.overallMetrics.totalR >= 0 ? `+${report.overallMetrics.totalR}` : report.overallMetrics.totalR}R</div>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Execution Summary Diagnostics */}
                   <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs space-y-2">
                     <h5 className="font-bold text-slate-300 uppercase tracking-wider text-[10px]">
@@ -872,61 +1218,66 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
 
               {/* TAB 2: 5 Modular Strategies Breakdown */}
               {activeTab === 'STRATEGIES' && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="border-b border-slate-800 text-slate-400 text-[11px] uppercase">
-                        <th className="py-2.5 px-3">Strategy</th>
-                        <th className="py-2.5 px-3">Trades</th>
-                        <th className="py-2.5 px-3">Win Rate</th>
-                        <th className="py-2.5 px-3">Net R</th>
-                        <th className="py-2.5 px-3">Expectancy</th>
-                        <th className="py-2.5 px-3">Profit Factor</th>
-                        <th className="py-2.5 px-3">Max DD</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60 font-mono text-slate-300">
-                      {report.strategyBreakdown.map((s) => (
-                        <tr key={s.strategy} className="hover:bg-slate-800/30">
-                          <td className="py-3 px-3 font-sans font-semibold text-white">
-                            {s.strategy}
-                          </td>
-                          <td className="py-3 px-3">{s.trades}</td>
-                          <td className="py-3 px-3">
-                            <span className={s.winRate >= 50 ? 'text-emerald-400' : 'text-slate-300'}>
-                              {s.winRate}%
-                            </span>
-                          </td>
-                          <td className="py-3 px-3">
-                            <span className={s.totalR >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                              {s.totalR >= 0 ? `+${s.totalR}` : s.totalR}R
-                            </span>
-                          </td>
-                          <td className="py-3 px-3">
-                            <span className={s.expectancy >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                              {s.expectancy >= 0 ? `+${s.expectancy}` : s.expectancy}R
-                            </span>
-                          </td>
-                          <td className="py-3 px-3">{s.profitFactor.toFixed(2)}</td>
-                          <td className="py-3 px-3 text-rose-400">-{s.maxDrawdownR}R</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* TAB 3: Confidence Buckets Test */}
-              {activeTab === 'CONFIDENCE' && (
-                <div className="space-y-3">
+                <div className="space-y-4">
                   <p className="text-xs text-slate-400">
-                    Tests whether higher algorithmic confluence scores correlate with higher historical win rates and expectancy:
+                    Independent evaluation of each production strategy on identical historical candles without cross-contamination:
                   </p>
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs border-collapse">
                       <thead>
                         <tr className="border-b border-slate-800 text-slate-400 text-[11px] uppercase">
-                          <th className="py-2.5 px-3">Confidence Bucket</th>
+                          <th className="py-2.5 px-3">Strategy</th>
+                          <th className="py-2.5 px-3">Trades</th>
+                          <th className="py-2.5 px-3">Win Rate</th>
+                          <th className="py-2.5 px-3">Net R</th>
+                          <th className="py-2.5 px-3">Expectancy</th>
+                          <th className="py-2.5 px-3">Profit Factor</th>
+                          <th className="py-2.5 px-3">Max DD</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono text-slate-300">
+                        {report.strategyBreakdown.map((s) => (
+                          <tr key={s.strategy} className="hover:bg-slate-800/30">
+                            <td className="py-3 px-3 font-sans font-semibold text-white">
+                              {s.strategy}
+                            </td>
+                            <td className="py-3 px-3">{s.trades}</td>
+                            <td className="py-3 px-3">
+                              <span className={s.winRate >= 50 ? 'text-emerald-400' : 'text-slate-300'}>
+                                {s.winRate}%
+                              </span>
+                            </td>
+                            <td className="py-3 px-3">
+                              <span className={s.totalR >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                {s.totalR >= 0 ? `+${s.totalR}` : s.totalR}R
+                              </span>
+                            </td>
+                            <td className="py-3 px-3">
+                              <span className={s.expectancy >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                {s.expectancy >= 0 ? `+${s.expectancy}` : s.expectancy}R
+                              </span>
+                            </td>
+                            <td className="py-3 px-3">{s.profitFactor.toFixed(2)}</td>
+                            <td className="py-3 px-3 text-rose-400">-{s.maxDrawdownR}R</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: Confidence Analysis (6 Tiers) */}
+              {activeTab === 'CONFIDENCE' && (
+                <div className="space-y-4">
+                  <p className="text-xs text-slate-400">
+                    Evaluates algorithmic confluence calibration across 6 score tiers (0–49, 50–59, 60–69, 70–79, 80–89, 90–100):
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 text-[11px] uppercase">
+                          <th className="py-2.5 px-3">Confidence Tier</th>
                           <th className="py-2.5 px-3">Trades</th>
                           <th className="py-2.5 px-3">Wins / Losses</th>
                           <th className="py-2.5 px-3">Win Rate</th>
@@ -969,43 +1320,150 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                 </div>
               )}
 
-              {/* TAB 4: R:R Buckets */}
+              {/* TAB 4: Risk / Reward & Friction */}
               {activeTab === 'RR' && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="border-b border-slate-800 text-slate-400 text-[11px] uppercase">
-                        <th className="py-2.5 px-3">Risk/Reward Bucket</th>
-                        <th className="py-2.5 px-3">Trades</th>
-                        <th className="py-2.5 px-3">Win Rate</th>
-                        <th className="py-2.5 px-3">Net R</th>
-                        <th className="py-2.5 px-3">Expectancy</th>
-                        <th className="py-2.5 px-3">Profit Factor</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60 font-mono text-slate-300">
-                      {report.rrBuckets.map((b) => (
-                        <tr key={b.bucket} className="hover:bg-slate-800/30">
-                          <td className="py-3 px-3 font-sans font-bold text-white">
-                            1 : {b.bucket}
-                          </td>
-                          <td className="py-3 px-3">{b.trades}</td>
-                          <td className="py-3 px-3">{b.trades > 0 ? `${b.winRate}%` : '—'}</td>
-                          <td className="py-3 px-3">
-                            {b.trades > 0 ? (b.totalR >= 0 ? `+${b.totalR}R` : `${b.totalR}R`) : '—'}
-                          </td>
-                          <td className="py-3 px-3">
-                            {b.trades > 0 ? `${b.expectancy >= 0 ? '+' : ''}${b.expectancy}R` : '—'}
-                          </td>
-                          <td className="py-3 px-3">{b.trades > 0 ? b.profitFactor.toFixed(2) : '—'}</td>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5">
+                      <span className="text-[10px] uppercase text-slate-500 font-semibold">Average R / Trade</span>
+                      <div className="text-xl font-bold font-mono text-white mt-1">
+                        {report.overallMetrics.averageR >= 0 ? `+${report.overallMetrics.averageR}` : report.overallMetrics.averageR}R
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Median: {report.overallMetrics.averageR}R
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5">
+                      <span className="text-[10px] uppercase text-slate-500 font-semibold">Consecutive Streaks</span>
+                      <div className="text-xl font-bold font-mono text-white mt-1">
+                        <span className="text-emerald-400">{report.overallMetrics.maxConsecutiveWins}W</span> / <span className="text-rose-400">{report.overallMetrics.maxConsecutiveLosses}L</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Max Loss Streak: {report.overallMetrics.maxConsecutiveLosses}
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5">
+                      <span className="text-[10px] uppercase text-slate-500 font-semibold">Largest Win / Loss</span>
+                      <div className="text-xl font-bold font-mono text-white mt-1">
+                        <span className="text-emerald-400">+{report.overallMetrics.bestTradeR}R</span> / <span className="text-rose-400">-{report.overallMetrics.worstTradeR}R</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Avg Win: +{report.overallMetrics.averageWinR}R
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5">
+                      <span className="text-[10px] uppercase text-slate-500 font-semibold">Total Cost Drag</span>
+                      <div className="text-xl font-bold font-mono text-amber-400 mt-1">
+                        -{report.overallMetrics.totalCostImpactR || 0}R
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Spread + Slippage + Comm
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 text-[11px] uppercase">
+                          <th className="py-2.5 px-3">Risk/Reward Bucket</th>
+                          <th className="py-2.5 px-3">Trades</th>
+                          <th className="py-2.5 px-3">Win Rate</th>
+                          <th className="py-2.5 px-3">Net R</th>
+                          <th className="py-2.5 px-3">Expectancy</th>
+                          <th className="py-2.5 px-3">Profit Factor</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono text-slate-300">
+                        {report.rrBuckets.map((b) => (
+                          <tr key={b.bucket} className="hover:bg-slate-800/30">
+                            <td className="py-3 px-3 font-sans font-bold text-white">
+                              1 : {b.bucket}
+                            </td>
+                            <td className="py-3 px-3">{b.trades}</td>
+                            <td className="py-3 px-3">{b.trades > 0 ? `${b.winRate}%` : '—'}</td>
+                            <td className="py-3 px-3">
+                              {b.trades > 0 ? (b.totalR >= 0 ? `+${b.totalR}R` : `${b.totalR}R`) : '—'}
+                            </td>
+                            <td className="py-3 px-3">
+                              {b.trades > 0 ? `${b.expectancy >= 0 ? '+' : ''}${b.expectancy}R` : '—'}
+                            </td>
+                            <td className="py-3 px-3">{b.trades > 0 ? b.profitFactor.toFixed(2) : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
 
-              {/* TAB 5: Market Regimes */}
+              {/* TAB 5: Portfolio & Asset Breakdown */}
+              {activeTab === 'PORTFOLIO' && (
+                <div className="space-y-4">
+                  <div className="text-xs text-slate-400">
+                    Comparative historical baseline performance across Forex, Crypto, Commodities, and Indices:
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 text-[11px] uppercase">
+                          <th className="py-2.5 px-3">Symbol</th>
+                          <th className="py-2.5 px-3">Class</th>
+                          <th className="py-2.5 px-3">Trades</th>
+                          <th className="py-2.5 px-3">Win Rate</th>
+                          <th className="py-2.5 px-3">Net R</th>
+                          <th className="py-2.5 px-3">Expectancy</th>
+                          <th className="py-2.5 px-3">Profit Factor</th>
+                          <th className="py-2.5 px-3">Max DD</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono text-slate-300">
+                        {report.assetBreakdown && report.assetBreakdown.length > 0 ? (
+                          report.assetBreakdown.map((a) => (
+                            <tr key={a.symbol} className="hover:bg-slate-800/30">
+                              <td className="py-3 px-3 font-sans font-bold text-white flex items-center gap-1.5">
+                                <span>{a.symbol}</span>
+                              </td>
+                              <td className="py-3 px-3 font-sans text-slate-400">{a.assetClass}</td>
+                              <td className="py-3 px-3">{a.trades}</td>
+                              <td className="py-3 px-3">
+                                <span className={a.winRate >= 50 ? 'text-emerald-400' : 'text-slate-300'}>
+                                  {a.trades > 0 ? `${a.winRate}%` : '—'}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3">
+                                <span className={a.totalR >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                  {a.trades > 0 ? (a.totalR >= 0 ? `+${a.totalR}R` : `${a.totalR}R`) : '—'}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3">
+                                <span className={a.expectancy >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                  {a.trades > 0 ? `${a.expectancy >= 0 ? '+' : ''}${a.expectancy}R` : '—'}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3">{a.trades > 0 ? a.profitFactor.toFixed(2) : '—'}</td>
+                              <td className="py-3 px-3 text-rose-400">
+                                {a.trades > 0 ? `-${a.maxDrawdownR}R` : '—'}
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={8} className="py-6 text-center font-sans text-slate-500">
+                              Single asset backtest currently selected ({report.config.symbol}). Select &quot;Real Multi-Asset Live Feeds&quot; or &quot;All 12 Supported Assets&quot; to evaluate cross-asset portfolio performance.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 6: Market Regimes */}
               {activeTab === 'REGIMES' && (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs border-collapse">
@@ -1039,12 +1497,172 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                 </div>
               )}
 
-              {/* TAB 6: Complete Trade Log */}
+              {/* TAB 7: Monte Carlo Resampling */}
+              {activeTab === 'MONTE_CARLO' && (
+                <div className="space-y-6">
+                  {/* Monte Carlo Controls & Status */}
+                  <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400">
+                        <Dice5 className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                          Monte Carlo Bootstrap Resampling (1,000 Iterations)
+                        </h4>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Assesses trade sequence risk, risk of ruin, and worst-case drawdowns by randomly re-ordering historical trade outcomes.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 text-xs">
+                      <div className="flex items-center gap-1.5 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800">
+                        <span className="text-slate-400">Iterations:</span>
+                        <select
+                          value={monteCarloIterations}
+                          onChange={(e) => setMonteCarloIterations(Number(e.target.value))}
+                          className="bg-transparent text-white font-mono focus:outline-none cursor-pointer"
+                        >
+                          <option value={500} className="bg-slate-900">500</option>
+                          <option value={1000} className="bg-slate-900">1,000</option>
+                          <option value={2000} className="bg-slate-900">2,000</option>
+                        </select>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800">
+                        <span className="text-slate-400">Seed:</span>
+                        <input
+                          type="number"
+                          value={monteCarloSeed}
+                          onChange={(e) => setMonteCarloSeed(Number(e.target.value))}
+                          className="w-12 bg-transparent text-white font-mono text-center focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {monteCarlo ? (
+                    <div className="space-y-6">
+                      {/* Percentiles Matrix */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                        <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1">
+                          <span className="text-[10px] uppercase text-slate-500 font-semibold">Median Drawdown (50th)</span>
+                          <div className="text-xl font-bold font-mono text-rose-400">
+                            -{monteCarlo.drawdownPercentiles.p50}R
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            25th: -{monteCarlo.drawdownPercentiles.p25}R | 75th: -{monteCarlo.drawdownPercentiles.p75}R
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1">
+                          <span className="text-[10px] uppercase text-slate-500 font-semibold">Worst-Case Drawdown (95th)</span>
+                          <div className="text-xl font-bold font-mono text-rose-500">
+                            -{monteCarlo.drawdownPercentiles.p95}R
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            Max simulated: -{monteCarlo.drawdownPercentiles.max}R
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1">
+                          <span className="text-[10px] uppercase text-slate-500 font-semibold">Risk of Ruin (&gt;25R DD)</span>
+                          <div className={`text-xl font-bold font-mono ${monteCarlo.riskOfRuinPercent === 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                            {monteCarlo.riskOfRuinPercent}%
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            Prob DD &gt; 15R: {monteCarlo.probabilityDrawdownAbove15R}%
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-1">
+                          <span className="text-[10px] uppercase text-slate-500 font-semibold">Max Losing Streak (95th)</span>
+                          <div className="text-xl font-bold font-mono text-amber-400">
+                            {monteCarlo.losingStreakPercentiles.p95} Consecutive
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            Median: {monteCarlo.losingStreakPercentiles.p50} | Worst: {monteCarlo.losingStreakPercentiles.max}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Monte Carlo Resampled Fan Paths Visualizer */}
+                      <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h5 className="text-xs font-bold text-white uppercase tracking-wider">
+                            Resampled Equity Curve Fan ({monteCarlo.simulatedCurves.length} Representative Paths)
+                          </h5>
+                          <span className="text-[11px] text-slate-500 font-mono">
+                            Median End Equity: {monteCarlo.endingEquityPercentiles.p50 >= 100 ? `+${(monteCarlo.endingEquityPercentiles.p50 - 100).toFixed(1)}R` : `${(monteCarlo.endingEquityPercentiles.p50 - 100).toFixed(1)}R`}
+                          </span>
+                        </div>
+                        <div className="h-56 w-full relative">
+                          <MonteCarloFanChart sampleCurves={monteCarlo.simulatedCurves.map((c) => c.path)} />
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-8 text-center text-slate-500 text-xs">
+                      Run a backtest with at least 2 closed trades to generate Monte Carlo probabilistic analysis.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 8: Complete Trade Log */}
               {activeTab === 'TRADES' && (
                 <div className="space-y-3">
-                  <div className="text-xs text-slate-400 flex items-center justify-between">
-                    <span>Showing all {report.trades.length} simulated executions</span>
-                    <span className="text-[11px] text-slate-500">Click any row to expand full details</span>
+                  {/* Search & Filter Bar */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-2 flex-1 max-w-sm">
+                      <div className="relative w-full">
+                        <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          placeholder="Search symbol, strategy, direction..."
+                          value={tradeSearchQuery}
+                          onChange={(e) => setTradeSearchQuery(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-500">Filter:</span>
+                      <button
+                        onClick={() => setTradeOutcomeFilter('ALL')}
+                        className={`px-2.5 py-1 rounded text-[11px] font-semibold cursor-pointer ${
+                          tradeOutcomeFilter === 'ALL' ? 'bg-blue-600 text-white' : 'bg-slate-950 text-slate-400 border border-slate-800'
+                        }`}
+                      >
+                        All ({report.trades.length})
+                      </button>
+                      <button
+                        onClick={() => setTradeOutcomeFilter('WIN')}
+                        className={`px-2.5 py-1 rounded text-[11px] font-semibold cursor-pointer ${
+                          tradeOutcomeFilter === 'WIN' ? 'bg-emerald-600 text-white' : 'bg-slate-950 text-slate-400 border border-slate-800'
+                        }`}
+                      >
+                        Wins ({report.overallMetrics.wins})
+                      </button>
+                      <button
+                        onClick={() => setTradeOutcomeFilter('LOSS')}
+                        className={`px-2.5 py-1 rounded text-[11px] font-semibold cursor-pointer ${
+                          tradeOutcomeFilter === 'LOSS' ? 'bg-rose-600 text-white' : 'bg-slate-950 text-slate-400 border border-slate-800'
+                        }`}
+                      >
+                        Losses ({report.overallMetrics.losses})
+                      </button>
+                      <button
+                        onClick={() => setTradeOutcomeFilter('BE')}
+                        className={`px-2.5 py-1 rounded text-[11px] font-semibold cursor-pointer ${
+                          tradeOutcomeFilter === 'BE' ? 'bg-amber-600 text-white' : 'bg-slate-950 text-slate-400 border border-slate-800'
+                        }`}
+                      >
+                        Breakeven ({report.overallMetrics.breakevens})
+                      </button>
+                    </div>
                   </div>
 
                   <div className="overflow-x-auto">
@@ -1064,7 +1682,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60 font-mono text-slate-300">
-                        {report.trades.map((t) => {
+                        {filteredTrades.map((t) => {
                           const isExpanded = expandedTradeId === t.id;
                           return (
                             <React.Fragment key={t.id}>
@@ -1174,7 +1792,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                 </div>
               )}
 
-              {/* TAB 7: Engine Verification Suite */}
+              {/* TAB 9: Engine Verification Suite */}
               {activeTab === 'VERIFICATION' && (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -1184,7 +1802,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                         <span>Automated Engine Verification Suite</span>
                       </h4>
                       <p className="text-[11px] text-slate-400 mt-0.5">
-                        Deterministic mathematical assertions covering BUY/SELL targets, stops, conflict rules, and look-ahead invariance.
+                        Deterministic mathematical assertions covering BUY/SELL targets, stops, conflict rules, provider validations, and look-ahead invariance.
                       </p>
                     </div>
 
@@ -1193,7 +1811,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                       className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
-                      <span>Re-Run All Tests</span>
+                      <span>Re-Run All 18 Tests</span>
                     </button>
                   </div>
 
@@ -1255,7 +1873,7 @@ export const BacktestView: React.FC<BacktestViewProps> = ({
                     </div>
                   ) : (
                     <div className="p-8 text-center text-slate-500 text-xs">
-                      Click &quot;Re-Run All Tests&quot; to execute the automated verification test suite.
+                      Click &quot;Re-Run All 18 Tests&quot; to execute the automated verification test suite.
                     </div>
                   )}
                 </div>
@@ -1369,7 +1987,7 @@ const EquityCurveChart: React.FC<{ points: any[] }> = ({ points }) => {
       {/* Peak Equity Line (Grey) */}
       <path d={peakPath} fill="none" stroke="#475569" strokeWidth="1.5" strokeDasharray="3 3" />
 
-      {/* Main Equity Path (Emerald or Rose depending on end) */}
+      {/* Main Equity Path */}
       <path
         d={linePath}
         fill="none"
@@ -1391,6 +2009,114 @@ const EquityCurveChart: React.FC<{ points: any[] }> = ({ points }) => {
           strokeWidth="1"
         />
       ))}
+    </svg>
+  );
+};
+
+/**
+ * Pure SVG Monte Carlo Fan Chart Visualizer
+ */
+const MonteCarloFanChart: React.FC<{ sampleCurves: number[][]; baselineEquity?: number }> = ({
+  sampleCurves,
+  baselineEquity = 100,
+}) => {
+  if (!sampleCurves || sampleCurves.length === 0) return null;
+
+  let minVal = baselineEquity - 5;
+  let maxVal = baselineEquity + 5;
+
+  for (const curve of sampleCurves) {
+    for (const val of curve) {
+      if (val < minVal) minVal = val;
+      if (val > maxVal) maxVal = val;
+    }
+  }
+
+  const range = maxVal - minVal || 1;
+  const maxLen = Math.max(...sampleCurves.map((c) => c.length));
+  if (maxLen < 2) return null;
+
+  const width = 800;
+  const height = 200;
+  const padding = { top: 15, right: 30, bottom: 25, left: 50 };
+
+  const getX = (index: number) => {
+    return padding.left + (index / (maxLen - 1)) * (width - padding.left - padding.right);
+  };
+
+  const getY = (val: number) => {
+    return (
+      height -
+      padding.bottom -
+      ((val - minVal) / range) * (height - padding.top - padding.bottom)
+    );
+  };
+
+  const baselineY = getY(baselineEquity);
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible">
+      {/* Baseline Grid */}
+      <line
+        x1={padding.left}
+        y1={baselineY}
+        x2={width - padding.right}
+        y2={baselineY}
+        stroke="#475569"
+        strokeDasharray="4 4"
+        strokeWidth="1"
+      />
+      <text
+        x={padding.left - 8}
+        y={baselineY + 4}
+        fill="#94a3b8"
+        fontSize="10"
+        textAnchor="end"
+        fontFamily="monospace"
+      >
+        {baselineEquity.toFixed(0)}R
+      </text>
+
+      {/* Top / Bottom Labels */}
+      <text
+        x={padding.left - 8}
+        y={getY(maxVal) + 4}
+        fill="#64748b"
+        fontSize="10"
+        textAnchor="end"
+        fontFamily="monospace"
+      >
+        {maxVal.toFixed(0)}R
+      </text>
+      <text
+        x={padding.left - 8}
+        y={getY(minVal) + 4}
+        fill="#64748b"
+        fontSize="10"
+        textAnchor="end"
+        fontFamily="monospace"
+      >
+        {minVal.toFixed(0)}R
+      </text>
+
+      {/* Sample Paths */}
+      {sampleCurves.map((curve, idx) => {
+        const path = curve
+          .map((val, i) => `${i === 0 ? 'M' : 'L'} ${getX(i).toFixed(1)} ${getY(val).toFixed(1)}`)
+          .join(' ');
+        const isLast = idx === 0;
+        return (
+          <path
+            key={idx}
+            d={path}
+            fill="none"
+            stroke={isLast ? '#38bdf8' : '#3b82f6'}
+            strokeOpacity={isLast ? 0.9 : 0.25}
+            strokeWidth={isLast ? 2 : 1}
+            strokeLinecap="round"
+          />
+        );
+      })}
     </svg>
   );
 };

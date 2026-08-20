@@ -55,12 +55,45 @@ class MockProvider implements MarketDataProvider {
   }
 
   async getProviderStatus(): Promise<ProviderStatusInfo> {
+    const single = await this.getSingleStatus();
     return {
       provider: this.name,
       configured: this.isConfigured,
+      activeProvider: this.name,
+      marketFeed: 'LIVE',
       status: 'ONLINE',
       lastChecked: Date.now(),
+      providers: {
+        twelveData: single,
+        finnhub: single,
+      },
     };
+  }
+
+  async getSingleStatus(): Promise<import('../../src/types').SingleProviderStatus> {
+    return {
+      name: this.name,
+      configured: this.isConfigured,
+      state: 'CONNECTED',
+      status: 'ONLINE',
+      message: `${this.name} active`,
+      lastChecked: Date.now(),
+    };
+  }
+
+  async checkHealth(): Promise<import('../providers/MarketDataProvider').HealthCheckResult> {
+    return {
+      healthy: true,
+      state: 'CONNECTED',
+      latencyMs: 25,
+      testedSymbol: 'BTC/USD',
+      price: 68000,
+      timestamp: Date.now(),
+    };
+  }
+
+  resetCooldown(): void {
+    // mock reset
   }
 
   async isSymbolSupported(_asset: Asset): Promise<boolean> {

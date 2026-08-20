@@ -53,6 +53,38 @@ export const API = {
     );
   },
 
+  async reconnectProviders(): Promise<{ success: boolean; message: string; status: ProviderStatusInfo }> {
+    return fetchJson<{ success: boolean; message: string; status: ProviderStatusInfo }>(
+      '/api/market/reconnect',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      },
+      'Failed to reconnect providers'
+    );
+  },
+
+  async runDiagnosticTestSuite(): Promise<{
+    success: boolean;
+    timestamp: string;
+    providerStatus: ProviderStatusInfo;
+    results: Record<string, any>;
+  }> {
+    return fetchJson<{
+      success: boolean;
+      timestamp: string;
+      providerStatus: ProviderStatusInfo;
+      results: Record<string, any>;
+    }>(
+      '/api/market/diagnostics/test-suite',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      },
+      'Failed to run diagnostic test suite'
+    );
+  },
+
   async getEngineStatus(symbol?: string): Promise<import('../types').EngineStatus> {
     return fetchJson<import('../types').EngineStatus>(
       `/api/market/engine-status${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ''}`,
@@ -86,7 +118,7 @@ export const API = {
 
   async getQuote(symbol: string): Promise<{ quote: MarketPrice | MarketQuote; dataSource: string }> {
     return fetchJson<{ quote: MarketPrice | MarketQuote; dataSource: string }>(
-      `/api/market/quote/${encodeURIComponent(symbol)}`,
+      `/api/market/quote?symbol=${encodeURIComponent(symbol)}`,
       undefined,
       `Failed to fetch quote for ${symbol}`
     );
@@ -113,9 +145,63 @@ export const API = {
       status?: string;
       errorMessage?: string;
     }>(
-      `/api/market/candles/${encodeURIComponent(symbol)}?timeframe=${timeframe}`,
+      `/api/market/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}`,
       undefined,
       `Failed to fetch candles for ${symbol}`
+    );
+  },
+
+  async getBacktestHistoricalCandles(
+    symbol: string,
+    timeframe: Timeframe = 'M15',
+    limit = 200,
+    startDate?: string,
+    endDate?: string
+  ): Promise<{
+    status: 'AVAILABLE' | 'UNAVAILABLE';
+    symbol: string;
+    timeframe: Timeframe;
+    candles: MarketCandle[];
+    dataSource: string;
+    candleCount: number;
+    startDate?: string;
+    endDate?: string;
+    errorMessage?: string;
+    dataQuality?: {
+      isValid: boolean;
+      totalCandles: number;
+      duplicateCount: number;
+      outOfOrderCount: number;
+      zeroOrNaNCandles: number;
+      invalidGeometryCount: number;
+      gapsDetected: number;
+      warnings: string[];
+      errors: string[];
+    };
+  }> {
+    const params = new URLSearchParams({
+      symbol,
+      timeframe,
+      limit: String(limit),
+    });
+    if (startDate) params.set('startDate', startDate);
+    if (endDate) params.set('endDate', endDate);
+
+    return fetchJson<{
+      status: 'AVAILABLE' | 'UNAVAILABLE';
+      symbol: string;
+      timeframe: Timeframe;
+      candles: MarketCandle[];
+      dataSource: string;
+      candleCount: number;
+      startDate?: string;
+      endDate?: string;
+      errorMessage?: string;
+      dataQuality?: any;
+    }>(
+      `/api/backtest/historical-candles?${params.toString()}`,
+      undefined,
+      `Failed to fetch backtest historical candles for ${symbol}`
     );
   },
 

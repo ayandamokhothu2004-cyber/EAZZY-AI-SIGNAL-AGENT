@@ -228,14 +228,48 @@ export interface MarketPrice {
   isTest?: boolean;
 }
 
+export type ProviderState =
+  | 'DISCONNECTED'
+  | 'CONNECTING'
+  | 'CONNECTED'
+  | 'DEGRADED'
+  | 'COOLDOWN'
+  | 'RATE_LIMITED'
+  | 'ERROR'
+  | 'OFFLINE';
+
+export type ProviderErrorReason =
+  | 'RATE_LIMIT'
+  | 'AUTHENTICATION_ERROR'
+  | 'NETWORK_TIMEOUT'
+  | 'SERVER_ERROR'
+  | 'INVALID_DATA'
+  | 'MARKET_CLOSED'
+  | 'UNSUPPORTED_SYMBOL'
+  | 'UNCONFIGURED'
+  | 'UNKNOWN';
+
 export interface SingleProviderStatus {
   name: string;
   configured: boolean;
-  status: 'ONLINE' | 'RATE_LIMITED' | 'DEGRADED' | 'UNCONFIGURED' | 'ERROR' | 'OFFLINE';
+  state: ProviderState;
+  status: 'ONLINE' | 'RATE_LIMITED' | 'DEGRADED' | 'UNCONFIGURED' | 'ERROR' | 'OFFLINE' | 'COOLDOWN';
   message?: string;
-  lastSuccess?: number;
-  lastError?: string;
+  lastSuccess?: string | number | null;
+  lastFailure?: string | number | null;
+  lastError?: string | null;
+  lastErrorReason?: ProviderErrorReason;
+  cooldownUntil?: number | null;
+  cooldownRemainingSec?: number;
   lastChecked: number;
+  healthCheckResult?: {
+    healthy: boolean;
+    testedSymbol: string;
+    price?: number;
+    timestamp?: number;
+    latencyMs?: number;
+    error?: string;
+  };
   rateLimitStats?: {
     minuteRequests: number;
     minuteLimit: number;
@@ -263,9 +297,19 @@ export interface InstrumentProviderHealth {
 export interface ProviderStatusInfo {
   provider: string;
   configured: boolean;
-  status: 'ONLINE' | 'RATE_LIMITED' | 'DEGRADED' | 'UNCONFIGURED' | 'ERROR';
+  activeProvider: string;
+  marketFeed: 'LIVE' | 'FAILOVER' | 'DEGRADED' | 'COOLDOWN' | 'OFFLINE' | 'NONE';
+  marketFeedReason?: string;
+  state?: ProviderState;
+  status: 'ONLINE' | 'RATE_LIMITED' | 'DEGRADED' | 'UNCONFIGURED' | 'ERROR' | 'OFFLINE' | 'COOLDOWN';
   message?: string;
   lastChecked: number;
+  providers: {
+    twelveData: SingleProviderStatus;
+    finnhub: SingleProviderStatus;
+  };
+  primary?: SingleProviderStatus;
+  secondary?: SingleProviderStatus;
   rateLimitStats?: {
     minuteRequests: number;
     minuteLimit: number;
@@ -273,9 +317,6 @@ export interface ProviderStatusInfo {
     dailyLimit: number;
     isLimitReached: boolean;
   };
-  primary?: SingleProviderStatus;
-  secondary?: SingleProviderStatus;
-  activeProvider?: string;
   instruments?: Record<string, InstrumentProviderHealth>;
 }
 
