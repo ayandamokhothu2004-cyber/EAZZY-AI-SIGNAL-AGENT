@@ -363,13 +363,16 @@ export function generateSignalDecision(
     }
   }
 
-  // 4. Calculate Risk / Reward and Levels
+  // 4. Calculate Risk / Reward and Levels (anchored to originating closed candle for deterministic setup identity)
+  const originatingCandle = entryCandles[entryCandles.length - 1];
+  const referencePrice = originatingCandle ? originatingCandle.close : currentPrice;
+
   let entryCalc = {
-    suggestedEntry: currentPrice,
-    entryZone: { low: currentPrice * 0.999, high: currentPrice * 1.001 },
-    stopLoss: currentPrice * 0.995,
-    takeProfit1: currentPrice * 1.01,
-    takeProfit2: currentPrice * 1.018,
+    suggestedEntry: referencePrice,
+    entryZone: { low: referencePrice * 0.999, high: referencePrice * 1.001 },
+    stopLoss: referencePrice * 0.995,
+    takeProfit1: referencePrice * 1.01,
+    takeProfit2: referencePrice * 1.018,
     riskRewardRatio: 2.0,
     invalidationCondition: 'Thesis invalidated if market structure breaks opposite.',
   };
@@ -378,7 +381,7 @@ export function generateSignalDecision(
     entryCalc = calculateEntrySLTP(
       instrument,
       direction,
-      currentPrice,
+      referencePrice,
       report,
       entryCandles,
       riskSettings.minRiskReward
@@ -447,7 +450,6 @@ export function generateSignalDecision(
 
   const newsRisk = defaultNewsRiskProvider.getNewsRisk(instrument.symbol);
   const now = Date.now();
-  const originatingCandle = entryCandles[entryCandles.length - 1];
   const candleTimestamp = originatingCandle ? originatingCandle.time : now;
   const provider = instrument.provider || 'Twelve Data';
 

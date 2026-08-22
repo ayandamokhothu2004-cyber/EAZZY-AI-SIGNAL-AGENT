@@ -11,28 +11,116 @@ import {
   ProviderStatusInfo,
 } from '../types';
 
-async function fetchJson<T>(url: string, options?: RequestInit, fallbackMessage = 'Request failed'): Promise<T> {
-  const res = await fetch(url, options);
-  const contentType = res.headers.get('content-type') || '';
+interface FetchJsonOptions extends RequestInit {
+  timeoutMs?: number;
+}
 
-  if (!res.ok) {
-    let errorMsg = `${fallbackMessage} (${res.status})`;
-    if (contentType.includes('application/json')) {
-      try {
-        const json = await res.json();
-        errorMsg = json.error || json.message || errorMsg;
-      } catch {
-        // ignore json parse error on error responses
+async function fetchJson<T>(
+  url: string,
+  options?: FetchJsonOptions,
+  fallbackMessage = 'Request failed',
+  maxRetries = 1
+): Promise<T> {
+  let attempt = 0;
+  let lastError: any = null;
+  const timeoutMs = options?.timeoutMs ?? (url.includes('/scan') || url.includes('/diagnostics') ? 60000 : 30000);
+
+  while (attempt <= maxRetries) {
+    let timeoutId: NodeJS.Timeout | number | null = null;
+    try {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      if (controller) {
+        timeoutId = setTimeout(() => {
+          try {
+            controller.abort();
+          } catch {
+            // ignore abort errors
+          }
+        }, timeoutMs);
       }
+
+      const reqOptions: RequestInit = {
+        ...options,
+        signal: options?.signal || controller?.signal,
+      };
+
+      const res = await fetch(url, reqOptions);
+      if (timeoutId) clearTimeout(timeoutId);
+
+      const contentType = res.headers.get('content-type') || '';
+
+      if (!res.ok) {
+        let errorMsg = `${fallbackMessage} (${res.status})`;
+        if (contentType.includes('application/json')) {
+          try {
+            const json = await res.json();
+            errorMsg = json.error || json.message || errorMsg;
+          } catch {
+            // ignore json parse error on error responses
+          }
+        } else {
+          try {
+            const text = await res.text();
+            if (text && text.length < 200 && !text.includes('<!DOCTYPE')) {
+              errorMsg = text;
+            }
+          } catch {
+            // ignore
+          }
+        }
+        // Only retry on 502, 503, 504 server errors
+        if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < maxRetries) {
+          attempt++;
+          await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+          continue;
+        }
+        throw new Error(errorMsg);
+      }
+
+      if (contentType.includes('application/json')) {
+        return await res.json();
+      }
+
+      // Try fallback parsing text as JSON if content-type header was omitted
+      const text = await res.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error(`Server returned non-JSON response (${res.status} ${res.statusText})`);
+      }
+    } catch (err: any) {
+      if (timeoutId) clearTimeout(timeoutId);
+      lastError = err;
+
+      const isAbortOrTimeout =
+        err.name === 'AbortError' ||
+        err.name === 'TimeoutError' ||
+        err.message?.includes('aborted') ||
+        err.message?.includes('timeout');
+
+      const isNetworkError =
+        err.message?.includes('Failed to fetch') ||
+        err.message?.includes('NetworkError') ||
+        err.message?.includes('ECONNRESET');
+
+      if (attempt < maxRetries && (isAbortOrTimeout || isNetworkError)) {
+        attempt++;
+        await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+        continue;
+      }
+
+      const msg = isAbortOrTimeout
+        ? `Request timed out after ${Math.round(timeoutMs / 1000)}s`
+        : err.message || fallbackMessage;
+
+      if (msg.includes(fallbackMessage)) {
+        throw new Error(msg);
+      }
+      throw new Error(`${fallbackMessage}: ${msg}`);
     }
-    throw new Error(errorMsg);
   }
 
-  if (!contentType.includes('application/json')) {
-    throw new Error(`Server returned non-JSON response (${res.status} ${res.statusText})`);
-  }
-
-  return res.json();
+  throw lastError || new Error(fallbackMessage);
 }
 
 export const API = {

@@ -620,8 +620,8 @@ export class TwelveDataProvider implements MarketDataProvider {
 
       const ageMs = Date.now() - quoteTimestamp;
       const status: MarketDataStatus =
-        marketStatus === 'WEEKEND'
-          ? 'OFFLINE'
+        marketStatus === 'WEEKEND' || marketStatus === 'CLOSED'
+          ? 'LIVE'
           : ageMs > (asset.assetClass === 'CRYPTO' ? 10 * 60 * 1000 : 30 * 60 * 1000)
           ? 'STALE'
           : 'LIVE';

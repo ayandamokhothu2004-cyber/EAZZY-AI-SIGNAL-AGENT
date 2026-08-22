@@ -320,49 +320,85 @@ export function resetSignalJournal(seedHistorical: boolean = false) {
   }
 }
 
+let totalScanCount = 0;
+
+/**
+ * Increments and tracks total scan operations
+ */
+export function recordScanOperation(): number {
+  totalScanCount++;
+  return totalScanCount;
+}
+
+export function getTotalScanCount(): number {
+  return totalScanCount;
+}
+
 /**
  * Saves a newly scanned or updated signal to the journal.
- * Implements Signal Deduplication:
- * - If an existing ACTIVE signal has the exact same setupFingerprint or id,
- *   we refresh the active signal in place rather than inserting duplicate records.
+ * Implements Strict Signal Deduplication:
+ * 1. Scans with direction === 'WAIT' are returned as real-time analysis but NOT inserted as active trades in the journal.
+ * 2. If an existing ACTIVE signal matches by ID, fingerprint, or (same instrument, tradeType, strategy, direction, and candle timestamp),
+ *    we refresh the active signal in place while strictly preserving immutable trade parameters (entry, SL, TP, direction, strategy).
+ * 3. Fresh trade signals are added to the journal with unique setup identity.
  */
 export function saveSignalToJournal(signal: Signal): Signal {
+  recordScanOperation();
+
+  // If signal is WAIT (no trade setup), return without creating a journal entry
+  if (signal.direction === 'WAIT') {
+    return signal;
+  }
+
   const normSym = signal.instrument.replace(/[/_ -]/g, '').toUpperCase();
 
-  // Deduplication check: match existing active signal by fingerprint or ID
+  // Deduplication check: match existing active signal by fingerprint, ID, or closed candle setup identity
   const existingIdx = signalJournal.findIndex((s) => {
     const sNorm = s.instrument.replace(/[/_ -]/g, '').toUpperCase();
     if (s.id === signal.id) return true;
 
-    if (
-      s.status === 'ACTIVE' &&
-      sNorm === normSym &&
-      signal.setupFingerprint &&
-      s.setupFingerprint === signal.setupFingerprint
-    ) {
-      return true;
+    if (s.status === 'ACTIVE' && sNorm === normSym) {
+      if (signal.setupFingerprint && s.setupFingerprint && s.setupFingerprint === signal.setupFingerprint) {
+        return true;
+      }
+      if (
+        s.candleTimestamp &&
+        signal.candleTimestamp &&
+        s.candleTimestamp === signal.candleTimestamp &&
+        s.direction === signal.direction &&
+        s.tradeType === signal.tradeType &&
+        s.strategy === signal.strategy
+      ) {
+        return true;
+      }
     }
     return false;
   });
 
   if (existingIdx >= 0) {
     const existing = signalJournal[existingIdx];
-    // Refresh existing active signal without duplicating journal entry
+    // EXISTING SETUP UPDATED: Preserve immutable trade execution parameters, update live telemetry
     signalJournal[existingIdx] = {
       ...existing,
       currentPrice: signal.currentPrice,
       scanTimestamp: signal.scanTimestamp || Date.now(),
       aiConfidence: signal.aiConfidence,
       confidenceScore: signal.confidenceScore,
+      confidenceBreakdown: signal.confidenceBreakdown || existing.confidenceBreakdown,
+      confidenceFactors: signal.confidenceFactors || existing.confidenceFactors,
       setupExplanation: signal.setupExplanation,
-      reasons: signal.reasons,
-      strategyResults: signal.strategyResults,
-      confluence: signal.confluence,
+      reasons: signal.reasons || existing.reasons,
+      strategyResults: signal.strategyResults || existing.strategyResults,
+      confluence: signal.confluence || existing.confluence,
+      conditionsDetected: signal.conditionsDetected || existing.conditionsDetected,
+      newsRisk: signal.newsRisk || existing.newsRisk,
+      marketBias: signal.marketBias || existing.marketBias,
+      marketRegime: signal.marketRegime || existing.marketRegime,
     };
     return signalJournal[existingIdx];
   }
 
-  // Insert fresh signal
+  // NEW SIGNAL: Insert fresh trade signal
   signalJournal.unshift(signal);
   return signal;
 }

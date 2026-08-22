@@ -25,6 +25,7 @@ import {
   SignalNotification,
   EngineStatus,
 } from './types';
+import { mergeCandleUpdates } from './utils/candleLifecycle';
 
 const defaultRiskSettings: RiskSettings = {
   maxRiskPerTradePercent: 1.0,
@@ -42,7 +43,7 @@ export function App() {
 
   // Instruments & Market state
   const [instruments, setInstruments] = useState<InstrumentConfig[]>([]);
-  const [selectedSymbol, setSelectedSymbol] = useState<string>('EURUSD');
+  const [selectedSymbol, setSelectedSymbol] = useState<string>('EUR/USD');
   const [selectedTradeType, setSelectedTradeType] = useState<TradeType>('DAY');
   const [timeframe, setTimeframe] = useState<Timeframe>('M15');
   const [quotes, setQuotes] = useState<Record<string, MarketQuote>>({});
@@ -95,7 +96,7 @@ export function App() {
 
   const activeSignal = signals[selectedSymbol] || null;
   const currentInstrument =
-    instruments.find((i) => i.symbol === selectedSymbol) || {
+    instruments.find((i) => i.symbol === selectedSymbol || i.symbol.replace('/', '') === selectedSymbol.replace('/', '')) || {
       symbol: selectedSymbol,
       name: selectedSymbol,
       assetClass: 'FOREX' as const,
@@ -153,7 +154,7 @@ export function App() {
       const startTime = performanceNow();
       try {
         const data = await API.getCandles(sym, tf);
-        setCandles(data.candles);
+        setCandles((prev) => (prev.length > 0 && prev[0].symbol === sym ? mergeCandleUpdates(prev, data.candles, tf) : data.candles));
         setQuotes((prev) => ({ ...prev, [sym]: data.quote }));
         setDataSource(data.dataSource);
         setLatencyMs(Math.max(12, Math.round(performanceNow() - startTime)));
@@ -162,9 +163,9 @@ export function App() {
         // Context H1 candles for analysis
         if (tf !== 'H1') {
           const h1Data = await API.getCandles(sym, 'H1');
-          setH1Candles(h1Data.candles);
+          setH1Candles((prev) => (prev.length > 0 && prev[0].symbol === sym ? mergeCandleUpdates(prev, h1Data.candles, 'H1') : h1Data.candles));
         } else {
-          setH1Candles(data.candles);
+          setH1Candles((prev) => (prev.length > 0 && prev[0].symbol === sym ? mergeCandleUpdates(prev, data.candles, 'H1') : data.candles));
         }
       } catch (err) {
         console.error(`Failed to fetch candles for ${sym}:`, err);

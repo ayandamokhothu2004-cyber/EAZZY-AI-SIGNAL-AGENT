@@ -133,16 +133,18 @@ export async function fetchLiveMarketData(
   if (priceQuote.status !== 'UNAVAILABLE' && priceQuote.price > 0) {
     try {
       const tfList: Timeframe[] = Array.from(new Set<Timeframe>([...requestedTimeframes, 'M15']));
-      for (const tf of tfList) {
-        try {
-          const res = await marketDataManager.getHistoricalCandles(normalizedSym, tf, 60);
-          if (res.candles && res.candles.length >= 5) {
-            candles[tf] = res.candles;
+      await Promise.all(
+        tfList.map(async (tf) => {
+          try {
+            const res = await marketDataManager.getHistoricalCandles(normalizedSym, tf, 60);
+            if (res.candles && res.candles.length >= 5) {
+              candles[tf] = res.candles;
+            }
+          } catch (tfErr) {
+            console.warn(`[marketData] Could not fetch ${tf} for ${normalizedSym}:`, tfErr);
           }
-        } catch (tfErr) {
-          console.warn(`[marketData] Could not fetch ${tf} for ${normalizedSym}:`, tfErr);
-        }
-      }
+        })
+      );
     } catch (err) {
       console.warn(`[marketData] Non-blocking candle fetch error for ${normalizedSym}:`, err);
     }

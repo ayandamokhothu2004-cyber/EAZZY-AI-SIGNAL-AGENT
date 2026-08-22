@@ -473,10 +473,10 @@ export function createExpressApp(): express.Express {
   app.use('/.netlify/functions/api', router);
 
   // Explicit JSON 404 handler for unmatched API routes to prevent falling through to Vite SPA HTML fallback
-  app.use('/api/*', (req, res) => {
+  app.use('/api', (req, res) => {
     res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.originalUrl}` });
   });
-  app.use('/.netlify/functions/api/*', (req, res) => {
+  app.use('/.netlify/functions/api', (req, res) => {
     res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.originalUrl}` });
   });
 
