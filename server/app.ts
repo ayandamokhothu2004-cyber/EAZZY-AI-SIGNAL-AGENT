@@ -8,10 +8,16 @@ import {
 } from './marketData';
 import {
   getSignalJournal,
+  querySignalJournal,
+  getSignalById,
+  updateSignalStatus,
+  resetSignalJournal,
+  getJournalStorageStatus,
   saveSignalToJournal,
   trackSignalsAgainstMarketData,
   calculatePerformanceAnalytics,
 } from './journalService';
+import { SignalStore } from './signalStore';
 import { analyzeMarketWithGemini } from './geminiService';
 import { generateSignalDecision } from '../src/signals/decisionEngine';
 import { TradeType, Timeframe, RiskSettings } from '../src/types';
@@ -420,13 +426,170 @@ export function createExpressApp(): express.Express {
     }
   });
 
-  // Signal Journal endpoint
-  router.get('/signals/journal', (_req, res) => {
-    const journal = getSignalJournal();
-    res.json({
-      signals: journal,
-      totalCount: journal.length,
-    });
+  // Signal Journal endpoint with full filtering, sorting, pagination, and storage status
+  router.get('/signals/journal', (req, res) => {
+    try {
+      const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
+      const limit = req.query.limit === 'all' ? 'all' : req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+      const status = req.query.status as string | undefined;
+      const instrument = (req.query.instrument || req.query.symbol) as string | undefined;
+      const strategy = req.query.strategy as string | undefined;
+      const tradeType = req.query.tradeType as string | undefined;
+      const direction = req.query.direction as string | undefined;
+      const search = req.query.search as string | undefined;
+      const startDate = req.query.startDate as string | undefined;
+      const endDate = req.query.endDate as string | undefined;
+      const sortBy = req.query.sortBy as any;
+      const sortOrder = req.query.sortOrder as any;
+      const tab = req.query.tab as any;
+
+      const result = querySignalJournal({
+        page,
+        limit,
+        status,
+        instrument,
+        strategy,
+        tradeType,
+        direction,
+        search,
+        startDate,
+        endDate,
+        sortBy,
+        sortOrder,
+        tab,
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      console.error('Error fetching signal journal:', err);
+      res.status(500).json({ error: err.message || 'Failed to fetch signal journal' });
+    }
+  });
+
+  // Storage Status diagnostic endpoint
+  router.get('/signals/journal/storage-status', (_req, res) => {
+    try {
+      const status = getJournalStorageStatus();
+      res.json({ storage: status });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to fetch storage status' });
+    }
+  });
+
+  // Single Signal Details endpoint
+  router.get('/signals/journal/:id', (req, res) => {
+    try {
+      const signal = getSignalById(req.params.id);
+      if (!signal) {
+        return res.status(404).json({ error: `Signal not found with ID: ${req.params.id}` });
+      }
+      res.json({ signal });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to fetch signal details' });
+    }
+  });
+
+  // Update Signal Status endpoint (e.g. manual cancel or invalidation with terminal protection)
+  router.patch('/signals/journal/:id', (req, res) => {
+    try {
+      const { status, outcomeR, closedPrice, closedReason, provider, force } = req.body;
+      if (!status) {
+        return res.status(400).json({ error: 'Status is required' });
+      }
+
+      const result = updateSignalStatus(req.params.id, status, {
+        outcomeR,
+        closedPrice,
+        closedReason,
+        provider,
+        force,
+      });
+
+      if (!result.success) {
+        return res.status(400).json({ error: result.error });
+      }
+
+      res.json({ success: true, signal: result.signal });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to update signal status' });
+    }
+  });
+
+  // Reset Signal Journal endpoint
+  router.post('/signals/journal/reset', (req, res) => {
+    try {
+      const { seedHistorical = false } = req.body || {};
+      resetSignalJournal(Boolean(seedHistorical));
+      res.json({
+        success: true,
+        message: seedHistorical ? 'Journal reset and re-seeded with historical records' : 'Journal cleared',
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to reset signal journal' });
+    }
+  });
+
+  // Export Signal Journal endpoint
+  router.get('/signals/journal-export', (req, res) => {
+    try {
+      const format = req.query.format === 'csv' ? 'csv' : 'json';
+      const allSignals = getSignalJournal();
+
+      if (format === 'csv') {
+        const headers = [
+          'id',
+          'instrument',
+          'direction',
+          'tradeType',
+          'strategy',
+          'timeframe',
+          'suggestedEntry',
+          'stopLoss',
+          'takeProfit1',
+          'takeProfit2',
+          'riskRewardRatio',
+          'aiConfidence',
+          'status',
+          'outcomeR',
+          'timestamp',
+          'closedAt',
+          'closedPrice',
+          'setupExplanation',
+        ];
+
+        const rows = allSignals.map((s) =>
+          [
+            s.id,
+            s.instrument,
+            s.direction,
+            s.tradeType,
+            s.strategy || '',
+            s.timeframe || '',
+            s.suggestedEntry,
+            s.stopLoss,
+            s.takeProfit1,
+            s.takeProfit2 || '',
+            s.riskRewardRatio,
+            s.aiConfidence,
+            s.status,
+            s.outcomeR ?? '',
+            new Date(s.timestamp || s.createdAt || 0).toISOString(),
+            s.closedAt ? new Date(s.closedAt).toISOString() : '',
+            s.closedPrice ?? '',
+            `"${(s.setupExplanation || '').replace(/"/g, '""')}"`,
+          ].join(',')
+        );
+
+        const csv = [headers.join(','), ...rows].join('\n');
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="eazzy_signals_${Date.now()}.csv"`);
+        return res.send(csv);
+      }
+
+      res.json({ signals: allSignals, count: allSignals.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to export signals' });
+    }
   });
 
   // Performance Analytics endpoint

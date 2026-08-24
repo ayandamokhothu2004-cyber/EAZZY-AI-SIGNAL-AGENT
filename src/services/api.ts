@@ -309,11 +309,108 @@ export const API = {
     );
   },
 
-  async getJournal(): Promise<{ signals: Signal[]; totalCount: number }> {
-    return fetchJson<{ signals: Signal[]; totalCount: number }>(
-      '/api/signals/journal',
+  async getJournal(params?: {
+    page?: number;
+    limit?: number | 'all';
+    status?: string;
+    instrument?: string;
+    strategy?: string;
+    tradeType?: string;
+    direction?: string;
+    search?: string;
+    startDate?: string;
+    endDate?: string;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+    tab?: 'ALL' | 'ACTIVE' | 'HISTORY';
+  }): Promise<{
+    signals: Signal[];
+    totalCount: number;
+    filteredCount?: number;
+    page?: number;
+    limit?: number;
+    totalPages?: number;
+    activeCount?: number;
+    historyCount?: number;
+    stats?: any;
+    storage?: any;
+  }> {
+    const query = new URLSearchParams();
+    if (params) {
+      if (params.page !== undefined) query.set('page', String(params.page));
+      if (params.limit !== undefined) query.set('limit', String(params.limit));
+      if (params.status) query.set('status', params.status);
+      if (params.instrument) query.set('instrument', params.instrument);
+      if (params.strategy) query.set('strategy', params.strategy);
+      if (params.tradeType) query.set('tradeType', params.tradeType);
+      if (params.direction) query.set('direction', params.direction);
+      if (params.search) query.set('search', params.search);
+      if (params.startDate) query.set('startDate', params.startDate);
+      if (params.endDate) query.set('endDate', params.endDate);
+      if (params.sortBy) query.set('sortBy', params.sortBy);
+      if (params.sortOrder) query.set('sortOrder', params.sortOrder);
+      if (params.tab) query.set('tab', params.tab);
+    }
+    const qs = query.toString();
+    return fetchJson<{
+      signals: Signal[];
+      totalCount: number;
+      filteredCount?: number;
+      page?: number;
+      limit?: number;
+      totalPages?: number;
+      activeCount?: number;
+      historyCount?: number;
+      stats?: any;
+      storage?: any;
+    }>(
+      `/api/signals/journal${qs ? `?${qs}` : ''}`,
       undefined,
       'Failed to fetch signal journal'
+    );
+  },
+
+  async getSignalById(id: string): Promise<{ signal: Signal }> {
+    return fetchJson<{ signal: Signal }>(
+      `/api/signals/journal/${encodeURIComponent(id)}`,
+      undefined,
+      `Failed to fetch signal ${id}`
+    );
+  },
+
+  async updateSignalStatus(
+    id: string,
+    status: string,
+    options?: { outcomeR?: number; closedPrice?: number; closedReason?: string; force?: boolean }
+  ): Promise<{ success: boolean; signal: Signal }> {
+    return fetchJson<{ success: boolean; signal: Signal }>(
+      `/api/signals/journal/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, ...options }),
+      },
+      `Failed to update signal status for ${id}`
+    );
+  },
+
+  async getStorageStatus(): Promise<{ storage: any }> {
+    return fetchJson<{ storage: any }>(
+      '/api/signals/journal/storage-status',
+      undefined,
+      'Failed to fetch storage status'
+    );
+  },
+
+  async resetJournal(seedHistorical = false): Promise<{ success: boolean; message: string }> {
+    return fetchJson<{ success: boolean; message: string }>(
+      '/api/signals/journal/reset',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seedHistorical }),
+      },
+      'Failed to reset journal'
     );
   },
 

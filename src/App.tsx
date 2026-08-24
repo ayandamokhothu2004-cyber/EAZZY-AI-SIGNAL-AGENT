@@ -443,6 +443,15 @@ export function App() {
               setSelectedTradeType(sig.tradeType);
               setActiveView('TERMINAL');
             }}
+            onRefresh={async () => {
+              try {
+                const [jData, pData] = await Promise.all([API.getJournal(), API.getPerformance()]);
+                setJournal(jData.signals);
+                setPerformance(pData);
+              } catch (e) {
+                console.error('Failed to refresh journal:', e);
+              }
+            }}
           />
         )}
 

@@ -6,19 +6,17 @@ import {
   TradeType,
   SignalEvaluationLogEntry,
 } from '../src/types';
+import { SignalStore, JournalQueryParams, PaginatedJournalResult, StorageStatus } from './signalStore';
 
-// In-memory persistent journal
-let signalJournal: Signal[] = [];
-
-// Seed historical signals with realistic outcomes for testing calibration
-export function initializeHistoricalJournal(force: boolean = false) {
-  if (signalJournal.length > 0 && !force) return;
-
+/**
+ * Seed historical signals with realistic outcomes for testing calibration
+ */
+export function getMockHistoricalSignals(): Signal[] {
   const now = Date.now();
   const dayMs = 86400000;
   const hourMs = 3600000;
 
-  const mockHistorical: Signal[] = [
+  return [
     {
       id: 'SIG-EURUSD-HIST-01',
       signalId: 'SIG-EURUSD-HIST-01',
@@ -58,6 +56,7 @@ export function initializeHistoricalJournal(force: boolean = false) {
       closedAt: now - 3 * dayMs + 6 * hourMs,
       closedPrice: 1.0896,
       closedByProvider: 'Historical Archive',
+      closedReason: 'Take profit 1 reached at 1.0896',
       timeframeUsed: { context: 'H1', entry: 'M15' },
       confidenceFactors: [
         { name: 'Multi-Timeframe Alignment', category: 'MTF_CONFLUENCE', weight: 25, score: 95, detail: 'H1 context fully confirms M15 trigger.' },
@@ -116,6 +115,7 @@ export function initializeHistoricalJournal(force: boolean = false) {
       closedAt: now - 2 * dayMs,
       closedPrice: 2465.0,
       closedByProvider: 'Historical Archive',
+      closedReason: 'Take profit 2 reached at 2465.0',
       timeframeUsed: { context: 'H4', entry: 'H1' },
       confidenceFactors: [
         { name: 'Multi-Timeframe Alignment', category: 'MTF_CONFLUENCE', weight: 25, score: 96, detail: 'H4 macro institutional sweep confirmed on H1.' },
@@ -173,6 +173,7 @@ export function initializeHistoricalJournal(force: boolean = false) {
       closedAt: now - 2 * dayMs + 5 * hourMs,
       closedPrice: 19810.0,
       closedByProvider: 'Historical Archive',
+      closedReason: 'Take profit 1 reached at 19810.0',
       timeframeUsed: { context: 'M15', entry: 'M5' },
       confidenceFactors: [
         { name: 'Multi-Timeframe Alignment', category: 'MTF_CONFLUENCE', weight: 25, score: 80, detail: 'M15 resistance rejection.' },
@@ -229,6 +230,7 @@ export function initializeHistoricalJournal(force: boolean = false) {
       closedAt: now - 4 * dayMs + 8 * hourMs,
       closedPrice: 1.2645,
       closedByProvider: 'Historical Archive',
+      closedReason: 'Stop loss triggered at 1.2645',
       timeframeUsed: { context: 'H1', entry: 'M15' },
       confidenceFactors: [
         { name: 'Multi-Timeframe Alignment', category: 'MTF_CONFLUENCE', weight: 25, score: 62, detail: 'Moderate alignment.' },
@@ -285,6 +287,7 @@ export function initializeHistoricalJournal(force: boolean = false) {
       closedAt: now - 1 * dayMs + 1 * hourMs,
       closedPrice: 1.0850,
       closedByProvider: 'Historical Archive',
+      closedReason: 'Take profit 1 reached at 1.0850',
       timeframeUsed: { context: 'M15', entry: 'M5' },
       confidenceFactors: [
         { name: 'Value Zone & S/R Confluence', category: 'SUPPORT_RESISTANCE', weight: 15, score: 85, detail: 'Clean R1 pivot rejection.' },
@@ -303,21 +306,50 @@ export function initializeHistoricalJournal(force: boolean = false) {
       },
     },
   ];
-
-  signalJournal = mockHistorical;
 }
 
+/**
+ * Initializes the SignalStore with historical signals if empty
+ */
+export function initializeHistoricalJournal(force: boolean = false): void {
+  const store = SignalStore.getInstance();
+  const existing = store.getAll();
+  if (existing.length > 0 && !force) return;
+
+  const mockSignals = getMockHistoricalSignals();
+  if (force) {
+    store.clearSync();
+  }
+  for (const s of mockSignals) {
+    store.saveSync(s);
+  }
+}
+
+// Auto-initialize on module load
 initializeHistoricalJournal();
 
 export function getSignalJournal(): Signal[] {
-  return [...signalJournal].sort((a, b) => (b.timestamp || b.createdAt || 0) - (a.timestamp || a.createdAt || 0));
+  return SignalStore.getInstance().getAll();
 }
 
-export function resetSignalJournal(seedHistorical: boolean = false) {
-  signalJournal = [];
+export function querySignalJournal(params: JournalQueryParams = {}): PaginatedJournalResult {
+  return SignalStore.getInstance().query(params);
+}
+
+export function getSignalById(id: string): Signal | undefined {
+  return SignalStore.getInstance().getById(id);
+}
+
+export function resetSignalJournal(seedHistorical: boolean = false): void {
+  const store = SignalStore.getInstance();
+  store.clearSync();
   if (seedHistorical) {
     initializeHistoricalJournal(true);
   }
+}
+
+export function getJournalStorageStatus(): StorageStatus {
+  return SignalStore.getInstance().getStorageStatus();
 }
 
 let totalScanCount = 0;
@@ -335,12 +367,12 @@ export function getTotalScanCount(): number {
 }
 
 /**
- * Saves a newly scanned or updated signal to the journal.
+ * Saves a newly scanned or updated signal to the persistent journal.
  * Implements Strict Signal Deduplication:
  * 1. Scans with direction === 'WAIT' are returned as real-time analysis but NOT inserted as active trades in the journal.
  * 2. If an existing ACTIVE signal matches by ID, fingerprint, or (same instrument, tradeType, strategy, direction, and candle timestamp),
- *    we refresh the active signal in place while strictly preserving immutable trade parameters (entry, SL, TP, direction, strategy).
- * 3. Fresh trade signals are added to the journal with unique setup identity.
+ *    we refresh the active signal in place while strictly preserving immutable trade parameters (entry, SL, TP, direction, strategy, creation timestamp).
+ * 3. Fresh trade signals are added to the persistent journal with unique setup identity.
  */
 export function saveSignalToJournal(signal: Signal): Signal {
   recordScanOperation();
@@ -350,13 +382,15 @@ export function saveSignalToJournal(signal: Signal): Signal {
     return signal;
   }
 
+  const store = SignalStore.getInstance();
+  const allSignals = store.getAll();
   const normSym = signal.instrument.replace(/[/_ -]/g, '').toUpperCase();
 
   // Deduplication check: match existing active signal by fingerprint, ID, or closed candle setup identity
-  const existingIdx = signalJournal.findIndex((s) => {
-    const sNorm = s.instrument.replace(/[/_ -]/g, '').toUpperCase();
-    if (s.id === signal.id) return true;
+  const existing = allSignals.find((s) => {
+    if (s.id === signal.id || s.signalId === signal.id) return true;
 
+    const sNorm = s.instrument.replace(/[/_ -]/g, '').toUpperCase();
     if (s.status === 'ACTIVE' && sNorm === normSym) {
       if (signal.setupFingerprint && s.setupFingerprint && s.setupFingerprint === signal.setupFingerprint) {
         return true;
@@ -375,10 +409,9 @@ export function saveSignalToJournal(signal: Signal): Signal {
     return false;
   });
 
-  if (existingIdx >= 0) {
-    const existing = signalJournal[existingIdx];
+  if (existing) {
     // EXISTING SETUP UPDATED: Preserve immutable trade execution parameters, update live telemetry
-    signalJournal[existingIdx] = {
+    const updatedSignal: Signal = {
       ...existing,
       currentPrice: signal.currentPrice,
       scanTimestamp: signal.scanTimestamp || Date.now(),
@@ -395,12 +428,72 @@ export function saveSignalToJournal(signal: Signal): Signal {
       marketBias: signal.marketBias || existing.marketBias,
       marketRegime: signal.marketRegime || existing.marketRegime,
     };
-    return signalJournal[existingIdx];
+    store.saveSync(updatedSignal);
+    return updatedSignal;
   }
 
+  // Ensure unique ID if not generated
+  if (!signal.id) {
+    const timeStr = new Date().toISOString().replace(/[-:T.Z]/g, '').substring(0, 14);
+    signal.id = `SIG-${normSym}-${timeStr}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+  }
+  signal.signalId = signal.id;
+  if (!signal.timestamp) signal.timestamp = Date.now();
+  if (!signal.createdAt) signal.createdAt = signal.timestamp;
+
   // NEW SIGNAL: Insert fresh trade signal
-  signalJournal.unshift(signal);
+  store.saveSync(signal);
   return signal;
+}
+
+/**
+ * Updates a signal status (e.g. manual cancel, expiration, or invalidation) with terminal immutability validation
+ */
+export function updateSignalStatus(
+  id: string,
+  newStatus: SignalStatus,
+  options?: {
+    outcomeR?: number;
+    closedPrice?: number;
+    closedReason?: string;
+    provider?: string;
+    force?: boolean;
+  }
+): { success: boolean; signal?: Signal; error?: string } {
+  const store = SignalStore.getInstance();
+  const signal = store.getById(id);
+
+  if (!signal) {
+    return { success: false, error: `Signal not found with ID: ${id}` };
+  }
+
+  const isTerminal = [
+    'TP1_HIT',
+    'TP2_HIT',
+    'TP_HIT',
+    'SL_HIT',
+    'AMBIGUOUS',
+    'EXPIRED',
+    'CANCELLED',
+    'INVALIDATED',
+  ].includes(signal.status);
+
+  if (isTerminal && !options?.force) {
+    return {
+      success: false,
+      error: `Cannot modify signal ${id} because it is in a terminal state (${signal.status}). Terminal states are strictly immutable.`,
+    };
+  }
+
+  signal.status = newStatus;
+  signal.closedAt = Date.now();
+  if (options?.outcomeR !== undefined) signal.outcomeR = options.outcomeR;
+  if (options?.closedPrice !== undefined) signal.closedPrice = options.closedPrice;
+  if (options?.closedReason) signal.closedReason = options.closedReason;
+  if (options?.provider) signal.closedByProvider = options.provider;
+
+  store.saveSync(signal);
+  return { success: true, signal };
 }
 
 export interface MarketPriceUpdate {
@@ -615,8 +708,6 @@ export function trackSignalsAgainstMarketData(
       symbol: symbolOrUpdate,
       price: currentPrice || 0,
       timestamp: Date.now(),
-      // NOTE: We do NOT pass historical 24h high/low into real-time tick evaluation
-      // to avoid triggering SL from historical pre-signal price movements.
       bid: currentPrice,
       ask: currentPrice,
     };
@@ -624,10 +715,12 @@ export function trackSignalsAgainstMarketData(
     update = symbolOrUpdate;
   }
 
+  const store = SignalStore.getInstance();
+  const allSignals = store.getAll();
   const normSym = update.symbol.replace(/[/_ -]/g, '').toUpperCase();
   const statusChanges: { id: string; status: SignalStatus; outcomeR?: number }[] = [];
 
-  for (const signal of signalJournal) {
+  for (const signal of allSignals) {
     const sNorm = signal.instrument.replace(/[/_ -]/g, '').toUpperCase();
     if (sNorm !== normSym || signal.status !== 'ACTIVE' || signal.direction === 'WAIT') {
       continue;
@@ -647,6 +740,9 @@ export function trackSignalsAgainstMarketData(
       console.log(
         `[SIGNAL UPDATED]\ntimestamp: ${new Date(update.timestamp || Date.now()).toISOString()}\nsymbol: ${signal.instrument}\ncurrent price: ${update.price}\nprovider: ${update.dataSource || 'Twelve Data'}\nstate: ${res.newStatus}`
       );
+      // Persist state change to disk
+      store.saveSync(signal);
+
       statusChanges.push({
         id: signal.id,
         status: res.newStatus,
@@ -719,6 +815,9 @@ function updateGroup(
  * - Win Rate = Wins / (Wins + Losses) * 100
  */
 export function calculatePerformanceAnalytics(): PerformanceAnalytics {
+  const store = SignalStore.getInstance();
+  const signalJournal = store.getAll();
+
   // Extract unique signals by fingerprint or ID
   const seenKeys = new Set<string>();
   const uniqueSignals: Signal[] = [];

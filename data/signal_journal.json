@@ -1,0 +1,88 @@
+[
+  {
+    "id": "SIG-EURUSD-01",
+    "instrument": "EURUSD",
+    "direction": "BUY",
+    "tradeType": "DAY",
+    "strategy": "TREND_FOLLOWING",
+    "currentPrice": 1.085,
+    "suggestedEntry": 1.085,
+    "stopLoss": 1.08,
+    "takeProfit1": 1.095,
+    "takeProfit2": 1.102,
+    "riskRewardRatio": 2,
+    "aiConfidence": 82,
+    "marketBias": "BULLISH",
+    "candleTimestamp": 1700000000000,
+    "timestamp": 1700000000000,
+    "createdAt": 1700000000000,
+    "setupExplanation": "Strong trend setup",
+    "conditionsDetected": [
+      "Bullish BOS",
+      "EMA Stack Alignment"
+    ],
+    "invalidationCondition": "Close below 1.0800",
+    "status": "ACTIVE",
+    "timeframeUsed": {
+      "context": "H1",
+      "entry": "M15"
+    },
+    "confidenceFactors": [],
+    "strategyBreakdown": {
+      "trendFollowing": true,
+      "breakout": false,
+      "pullback": false,
+      "supportResistance": false,
+      "marketStructure": false,
+      "liquiditySweep": false,
+      "momentum": true,
+      "volatility": false,
+      "mtfConfluence": true
+    },
+    "setupFingerprint": "EURUSD:BUY:TREND_FOLLOWING:M15:1700000000000:1.0845-1.0855",
+    "signalId": "SIG-EURUSD-01"
+  },
+  {
+    "id": "SIG-GBPUSD-01",
+    "instrument": "GBPUSD",
+    "direction": "SELL",
+    "tradeType": "DAY",
+    "strategy": "TREND_FOLLOWING",
+    "currentPrice": 1.085,
+    "suggestedEntry": 1.085,
+    "stopLoss": 1.08,
+    "takeProfit1": 1.095,
+    "takeProfit2": 1.102,
+    "riskRewardRatio": 2,
+    "aiConfidence": 82,
+    "marketBias": "BULLISH",
+    "candleTimestamp": 1700000000000,
+    "timestamp": 1700000000000,
+    "createdAt": 1700000000000,
+    "setupExplanation": "Strong trend setup",
+    "conditionsDetected": [
+      "Bullish BOS",
+      "EMA Stack Alignment"
+    ],
+    "invalidationCondition": "Close below 1.0800",
+    "status": "ACTIVE",
+    "timeframeUsed": {
+      "context": "H1",
+      "entry": "M15"
+    },
+    "confidenceFactors": [],
+    "strategyBreakdown": {
+      "trendFollowing": true,
+      "breakout": false,
+      "pullback": false,
+      "supportResistance": false,
+      "marketStructure": false,
+      "liquiditySweep": false,
+      "momentum": true,
+      "volatility": false,
+      "mtfConfluence": true
+    },
+    "setupFingerprint": "GBPUSD:SELL:TREND_FOLLOWING:M15:1700000000000:1.2690-1.2710",
+    "signalId": "SIG-GBPUSD-01"
+  }
+]
