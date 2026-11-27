@@ -29,6 +29,8 @@ export type MarketDataStatus =
   | 'DATA_CONFLICT'
   | 'TEST_DATA';
 
+export type DataSyncState = 'LIVE' | 'DELAYED' | 'HISTORICAL' | 'DISCONNECTED';
+
 export type MarketRegimeType =
   | 'TRENDING_BULLISH'
   | 'TRENDING_BEARISH'

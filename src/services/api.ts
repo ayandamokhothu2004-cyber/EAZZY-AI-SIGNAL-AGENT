@@ -9,6 +9,7 @@ import {
   PerformanceAnalytics,
   RiskSettings,
   ProviderStatusInfo,
+  DataSyncState,
 } from '../types';
 
 interface FetchJsonOptions extends RequestInit {
@@ -222,6 +223,8 @@ export const API = {
     quote: MarketPrice | MarketQuote;
     dataSource: string;
     status?: string;
+    dataState?: DataSyncState;
+    lastUpdated?: number;
     errorMessage?: string;
   }> {
     return fetchJson<{
@@ -231,6 +234,8 @@ export const API = {
       quote: MarketPrice | MarketQuote;
       dataSource: string;
       status?: string;
+      dataState?: DataSyncState;
+      lastUpdated?: number;
       errorMessage?: string;
     }>(
       `/api/market/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}`,
@@ -297,8 +302,8 @@ export const API = {
     symbol: string,
     tradeType: TradeType,
     riskSettings?: RiskSettings
-  ): Promise<{ signal: Signal; quote: MarketQuote; dataSource: string }> {
-    return fetchJson<{ signal: Signal; quote: MarketQuote; dataSource: string }>(
+  ): Promise<{ signal: Signal; quote: MarketQuote; dataSource: string; dataState?: DataSyncState }> {
+    return fetchJson<{ signal: Signal; quote: MarketQuote; dataSource: string; dataState?: DataSyncState }>(
       '/api/signals/scan',
       {
         method: 'POST',
@@ -427,12 +432,20 @@ export const API = {
   ): Promise<{
     symbol: string;
     price: number;
+    quote?: MarketPrice | MarketQuote;
+    dataSource?: string;
+    dataState?: DataSyncState;
+    lastUpdated?: number;
     trackingResult: { updatedCount: number; statusChanges: any[] };
     performance: PerformanceAnalytics;
   }> {
     return fetchJson<{
       symbol: string;
       price: number;
+      quote?: MarketPrice | MarketQuote;
+      dataSource?: string;
+      dataState?: DataSyncState;
+      lastUpdated?: number;
       trackingResult: { updatedCount: number; statusChanges: any[] };
       performance: PerformanceAnalytics;
     }>(

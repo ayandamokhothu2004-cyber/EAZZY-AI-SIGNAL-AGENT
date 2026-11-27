@@ -21,6 +21,7 @@ import { SignalStore } from './signalStore';
 import { analyzeMarketWithGemini } from './geminiService';
 import { generateSignalDecision } from '../src/signals/decisionEngine';
 import { TradeType, Timeframe, RiskSettings } from '../src/types';
+import { computeIndicators, analyzeMarketStructure } from '../src/utils/indicators';
 import { getCandleState } from './config/intervals';
 
 const defaultRiskSettings: RiskSettings = {
@@ -214,6 +215,8 @@ export function createExpressApp(): express.Express {
         quote: candleData.quote,
         dataSource: candleData.dataSource,
         status: candleData.status,
+        dataState: candleData.dataState,
+        lastUpdated: candleData.lastUpdated,
         errorMessage: candleData.errorMessage,
       });
     } catch (error) {
@@ -358,7 +361,7 @@ export function createExpressApp(): express.Express {
         );
       }
 
-      // Deep reasoning layer via Gemini
+      // Deep reasoning layer via Gemini with real computed indicators & market structure
       const lastClose =
         confirmedEntryCandles && confirmedEntryCandles.length > 0
           ? confirmedEntryCandles[confirmedEntryCandles.length - 1].close
@@ -372,8 +375,17 @@ export function createExpressApp(): express.Express {
         baseSignal.takeProfit2 = lastClose;
       }
 
-      const rsiVal = confirmedEntryCandles.length >= 14 ? 54 : 50;
-      const atrVal = confirmedEntryCandles.length >= 14 ? instConfig.pipSize * 15 : lastClose * 0.002;
+      const entryIndicators = computeIndicators(confirmedEntryCandles);
+      const entryStructure = analyzeMarketStructure(confirmedEntryCandles);
+      const lastRsi = entryIndicators.rsi[entryIndicators.rsi.length - 1];
+      const lastEma20 = entryIndicators.ema20[entryIndicators.ema20.length - 1];
+      const lastEma50 = entryIndicators.ema50[entryIndicators.ema50.length - 1];
+      const lastEma200 = entryIndicators.ema200[entryIndicators.ema200.length - 1];
+      const lastMacdHist = entryIndicators.macd.histogram[entryIndicators.macd.histogram.length - 1];
+      const lastAtr = entryIndicators.atr[entryIndicators.atr.length - 1];
+
+      const rsiVal = Number.isFinite(lastRsi) ? lastRsi : 50;
+      const atrVal = Number.isFinite(lastAtr) && lastAtr > 0 ? lastAtr : instConfig.pipSize * 15;
 
       const aiAnalysis = await analyzeMarketWithGemini({
         instrument: sym,
@@ -384,41 +396,42 @@ export function createExpressApp(): express.Express {
         rawDirection: baseSignal.direction,
         indicators: {
           rsi: rsiVal,
-          ema20: lastClose,
-          ema50: lastClose * 0.998,
-          ema200: lastClose * 0.992,
-          macdHist: 0.0002,
+          ema20: Number.isFinite(lastEma20) ? lastEma20 : lastClose,
+          ema50: Number.isFinite(lastEma50) ? lastEma50 : lastClose,
+          ema200: Number.isFinite(lastEma200) ? lastEma200 : lastClose,
+          macdHist: Number.isFinite(lastMacdHist) ? lastMacdHist : 0,
           atr: atrVal,
         },
         structure: {
-          trend: baseSignal.marketBias,
-          higherHighs: true,
-          higherLows: true,
-          lastBOS: `${baseSignal.marketBias} at ${lastClose}`,
-          volatilityState: baseSignal.marketRegime?.regime || 'NORMAL',
+          trend: entryStructure.trend || baseSignal.marketBias,
+          higherHighs: entryStructure.higherHighs,
+          higherLows: entryStructure.higherLows,
+          lastBOS: entryStructure.lastBOS
+            ? `${entryStructure.lastBOS.type} BOS at ${entryStructure.lastBOS.price.toFixed(instConfig.digits)}`
+            : `${baseSignal.marketBias} bias near ${lastClose.toFixed(instConfig.digits)}`,
+          volatilityState: baseSignal.marketRegime?.regime || entryStructure.volatilityState || 'NORMAL',
         },
         conditionsDetected: baseSignal.conditionsDetected,
       });
 
       if (aiAnalysis) {
+        // Explanation layer enriches narrative & invalidation without altering or reversing deterministic engine direction/SL/TP
         baseSignal.setupExplanation = aiAnalysis.setupExplanation;
-        baseSignal.invalidationCondition = aiAnalysis.invalidationCondition;
-        baseSignal.invalidation = aiAnalysis.invalidationCondition;
-        if (aiAnalysis.direction === 'WAIT' && baseSignal.direction !== 'WAIT') {
-          baseSignal.direction = 'WAIT';
-          baseSignal.conditionsDetected.push(
-            'Risk Filter: AI explanation engine identified critical regime risk'
-          );
+        if (aiAnalysis.invalidationCondition) {
+          baseSignal.invalidationCondition = aiAnalysis.invalidationCondition;
+          baseSignal.invalidation = aiAnalysis.invalidationCondition;
         }
       }
 
       // Save to journal with deduplication
       const savedSignal = saveSignalToJournal(baseSignal);
+      const dataState = marketDataManager.deriveDataSyncState(marketData.quote, rawEntryCandles, entryTF);
 
       res.json({
         signal: savedSignal,
         quote: marketData.quote,
         dataSource: marketData.dataSource,
+        dataState,
       });
     } catch (error) {
       console.error('Error scanning signal:', error);
@@ -598,30 +611,43 @@ export function createExpressApp(): express.Express {
     res.json(analytics);
   });
 
-  // Tracker Tick endpoint
+  // Tracker Tick endpoint (quota-safe live quote sync + active signal tracking)
   router.post('/tracker/tick', async (req, res) => {
     try {
       const { symbol } = req.body as { symbol: string };
-      const sym = (symbol || 'EURUSD').toUpperCase();
+      const sym = (symbol || 'EUR/USD').toUpperCase();
 
-      const marketData = await fetchLiveMarketData(sym);
-      const quote = marketData.quote;
+      const quote = await marketDataManager.getQuote(sym);
+      const hasValidPrice = Number.isFinite(quote.price) && quote.price > 0 && quote.status !== 'UNAVAILABLE';
 
-      // Track active signals using live quote tick (bid/ask executable sides, avoiding historical 24h look-behind)
-      const trackingResult = trackSignalsAgainstMarketData({
-        symbol: sym,
-        price: quote.price,
-        bid: quote.bid || quote.price,
-        ask: quote.ask || quote.price,
-        timestamp: quote.timestamp || Date.now(),
-        dataSource: quote.dataSource || marketData.dataSource || 'Twelve Data',
-      });
+      const trackingResult = hasValidPrice
+        ? trackSignalsAgainstMarketData({
+            symbol: sym,
+            price: quote.price,
+            bid: quote.bid || quote.price,
+            ask: quote.ask || quote.price,
+            timestamp: quote.timestamp || Date.now(),
+            dataSource: quote.dataSource || 'Twelve Data',
+          })
+        : { updatedCount: 0, statusChanges: [] };
 
       const performance = calculatePerformanceAnalytics();
+      const dataState =
+        !hasValidPrice
+          ? 'DISCONNECTED'
+          : quote.marketStatus === 'WEEKEND' || quote.marketStatus === 'CLOSED'
+          ? 'HISTORICAL'
+          : quote.status === 'STALE' || quote.status === 'RATE_LIMITED' || quote.status === 'DATA_CONFLICT'
+          ? 'DELAYED'
+          : 'LIVE';
 
       res.json({
         symbol: sym,
         price: quote.price,
+        quote,
+        dataSource: quote.dataSource,
+        dataState,
+        lastUpdated: quote.timestamp || Date.now(),
         trackingResult,
         performance,
       });

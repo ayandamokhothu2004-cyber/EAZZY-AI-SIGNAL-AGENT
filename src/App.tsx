@@ -24,8 +24,9 @@ import {
   RiskSettings,
   SignalNotification,
   EngineStatus,
+  DataSyncState,
 } from './types';
-import { mergeCandleUpdates } from './utils/candleLifecycle';
+import { mergeCandleUpdates, applyLiveQuoteToCandles } from './utils/candleLifecycle';
 
 const defaultRiskSettings: RiskSettings = {
   maxRiskPerTradePercent: 1.0,
@@ -37,6 +38,67 @@ const defaultRiskSettings: RiskSettings = {
   minConfidenceRequired: 60,
 };
 
+function getSignalKey(symbol: string, tradeType: TradeType): string {
+  return `${symbol}::${tradeType}`;
+}
+
+function getFallbackInstrumentMeta(symbol: string): InstrumentConfig {
+  const upper = symbol.toUpperCase();
+  if (upper.includes('XAU')) {
+    return {
+      symbol,
+      name: 'Gold / US Dollar',
+      assetClass: 'COMMODITIES',
+      pipSize: 0.1,
+      digits: 2,
+      icon: '🥇',
+      description: 'Spot Gold precious metal safe haven and monetary inflation hedge.',
+    };
+  }
+  if (upper.includes('XAG')) {
+    return {
+      symbol,
+      name: 'Silver / US Dollar',
+      assetClass: 'COMMODITIES',
+      pipSize: 0.01,
+      digits: 3,
+      icon: '🥈',
+      description: 'Spot Silver industrial and monetary precious metal.',
+    };
+  }
+  if (upper.includes('BTC') || upper.includes('ETH') || upper.includes('SOL')) {
+    return {
+      symbol,
+      name: upper,
+      assetClass: 'CRYPTO',
+      pipSize: upper.includes('BTC') ? 1.0 : upper.includes('ETH') ? 0.1 : 0.01,
+      digits: 2,
+      icon: '₿',
+      description: '24/7 Cryptocurrency Asset',
+    };
+  }
+  if (upper === 'NAS100' || upper === 'SPX500' || upper === 'US30') {
+    return {
+      symbol,
+      name: upper,
+      assetClass: 'INDICES',
+      pipSize: upper === 'SPX500' ? 0.5 : 1.0,
+      digits: 2,
+      icon: '📊',
+      description: 'Equity Benchmark Index',
+    };
+  }
+  return {
+    symbol,
+    name: symbol,
+    assetClass: 'FOREX',
+    pipSize: upper.includes('JPY') ? 0.01 : 0.0001,
+    digits: upper.includes('JPY') ? 3 : 5,
+    icon: '📊',
+    description: 'Active Financial Asset',
+  };
+}
+
 export function App() {
   // Navigation & View
   const [activeView, setActiveView] = useState<'TERMINAL' | 'ANALYSIS' | 'JOURNAL' | 'PERFORMANCE' | 'BACKTEST'>('TERMINAL');
@@ -44,25 +106,41 @@ export function App() {
   // Instruments & Market state
   const [instruments, setInstruments] = useState<InstrumentConfig[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState<string>('EUR/USD');
-  const [selectedTradeType, setSelectedTradeType] = useState<TradeType>('DAY');
+  const [selectedTradeType, setSelectedTradeType] = useState<TradeType>(() => {
+    try {
+      const saved = localStorage.getItem('eazzy_trading_style');
+      if (saved === 'SCALP' || saved === 'DAY' || saved === 'SWING') {
+        return saved;
+      }
+      return 'DAY';
+    } catch {
+      return 'DAY';
+    }
+  });
   const [timeframe, setTimeframe] = useState<Timeframe>('M15');
   const [quotes, setQuotes] = useState<Record<string, MarketQuote>>({});
   const [candles, setCandles] = useState<MarketCandle[]>([]);
   const [h1Candles, setH1Candles] = useState<MarketCandle[]>([]);
-  const [dataSource, setDataSource] = useState<string>('Live Financial Stream');
+  const [dataSource, setDataSource] = useState<string>('Twelve Data');
+  const [dataState, setDataState] = useState<DataSyncState>('DELAYED');
+  const [providerError, setProviderError] = useState<string | null>(null);
   const [marketStatus, setMarketStatus] = useState<'OPEN' | 'CLOSED' | 'WEEKEND'>('OPEN');
   const [latencyMs, setLatencyMs] = useState<number>(45);
   const [lastUpdated, setLastUpdated] = useState<number>(Date.now());
   const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(null);
 
-  // Signals, Journal & Performance
+  // Request sequence guards to prevent stale async responses on rapid market/timeframe switching
+  const marketDataReqSeqRef = useRef<number>(0);
+  const scanReqSeqRef = useRef<number>(0);
+
+  // Signals (isolated by symbol::tradeType so modes never bleed), Journal & Performance
   const [signals, setSignals] = useState<Record<string, Signal>>({});
   const [journal, setJournal] = useState<Signal[]>([]);
   const [performance, setPerformance] = useState<PerformanceAnalytics | null>(null);
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [isRefreshingEngine, setIsRefreshingEngine] = useState<boolean>(false);
 
-  // Risk & Audio
+  // Risk & Audio (never modified or reset by trading style changes)
   const [riskSettings, setRiskSettings] = useState<RiskSettings>(() => {
     try {
       const saved = localStorage.getItem('eazzy_risk_settings');
@@ -94,17 +172,26 @@ export function App() {
     },
   ]);
 
-  const activeSignal = signals[selectedSymbol] || null;
+  const handleSelectTradeType = useCallback((nextStyle: TradeType) => {
+    setSelectedTradeType(nextStyle);
+    try {
+      localStorage.setItem('eazzy_trading_style', nextStyle);
+    } catch {
+      // ignore storage quota errors
+    }
+  }, []);
+
+  const activeSignal = signals[getSignalKey(selectedSymbol, selectedTradeType)] || null;
+  const signalsBySymbol: Record<string, Signal> = {};
+  for (const inst of instruments) {
+    const modeSig = signals[getSignalKey(inst.symbol, selectedTradeType)];
+    if (modeSig) {
+      signalsBySymbol[inst.symbol] = modeSig;
+    }
+  }
   const currentInstrument =
-    instruments.find((i) => i.symbol === selectedSymbol || i.symbol.replace('/', '') === selectedSymbol.replace('/', '')) || {
-      symbol: selectedSymbol,
-      name: selectedSymbol,
-      assetClass: 'FOREX' as const,
-      pipSize: 0.0001,
-      digits: selectedSymbol.includes('JPY') ? 3 : 5,
-      icon: '📊',
-      description: 'Active Financial Asset',
-    };
+    instruments.find((i) => i.symbol === selectedSymbol || i.symbol.replace('/', '') === selectedSymbol.replace('/', '')) ||
+    getFallbackInstrumentMeta(selectedSymbol);
 
   // Helper to add notification
   const addNotification = useCallback((title: string, message: string, type: SignalNotification['type']) => {
@@ -148,27 +235,56 @@ export function App() {
     initApp();
   }, []);
 
-  // 2. Fetch candles and quote for selected symbol & timeframe
+  // 2. Fetch candles and quote for selected symbol & timeframe (race-safe & timeframe-isolated)
   const fetchMarketDataForSymbol = useCallback(
     async (sym: string, tf: Timeframe) => {
+      const reqId = ++marketDataReqSeqRef.current;
       const startTime = performanceNow();
       try {
         const data = await API.getCandles(sym, tf);
-        setCandles((prev) => (prev.length > 0 && prev[0].symbol === sym ? mergeCandleUpdates(prev, data.candles, tf) : data.candles));
-        setQuotes((prev) => ({ ...prev, [sym]: data.quote }));
-        setDataSource(data.dataSource);
+        if (reqId !== marketDataReqSeqRef.current) return;
+
+        setCandles((prev) =>
+          prev.length > 0 && prev[0].symbol === sym && prev[0].timeframe === tf
+            ? mergeCandleUpdates(prev, data.candles, tf)
+            : data.candles
+        );
+        if (data.quote) {
+          setQuotes((prev) => ({ ...prev, [sym]: data.quote as MarketQuote }));
+          if (data.quote.marketStatus) {
+            setMarketStatus(data.quote.marketStatus);
+          }
+        }
+        setDataSource(data.dataSource || 'Twelve Data');
+        setDataState(
+          data.dataState ||
+            (data.candles.length === 0 ? 'DISCONNECTED' : data.quote?.status === 'LIVE' ? 'LIVE' : 'DELAYED')
+        );
+        setProviderError(data.candles.length === 0 ? data.errorMessage || 'Live candle data unavailable.' : null);
         setLatencyMs(Math.max(12, Math.round(performanceNow() - startTime)));
-        setLastUpdated(Date.now());
+        setLastUpdated(data.lastUpdated || data.quote?.timestamp || Date.now());
 
         // Context H1 candles for analysis
         if (tf !== 'H1') {
           const h1Data = await API.getCandles(sym, 'H1');
-          setH1Candles((prev) => (prev.length > 0 && prev[0].symbol === sym ? mergeCandleUpdates(prev, h1Data.candles, 'H1') : h1Data.candles));
+          if (reqId !== marketDataReqSeqRef.current) return;
+          setH1Candles((prev) =>
+            prev.length > 0 && prev[0].symbol === sym && prev[0].timeframe === 'H1'
+              ? mergeCandleUpdates(prev, h1Data.candles, 'H1')
+              : h1Data.candles
+          );
         } else {
-          setH1Candles((prev) => (prev.length > 0 && prev[0].symbol === sym ? mergeCandleUpdates(prev, data.candles, 'H1') : data.candles));
+          setH1Candles((prev) =>
+            prev.length > 0 && prev[0].symbol === sym && prev[0].timeframe === 'H1'
+              ? mergeCandleUpdates(prev, data.candles, 'H1')
+              : data.candles
+          );
         }
-      } catch (err) {
+      } catch (err: any) {
+        if (reqId !== marketDataReqSeqRef.current) return;
         console.error(`Failed to fetch candles for ${sym}:`, err);
+        setDataState('DISCONNECTED');
+        setProviderError(err?.message || `Failed to fetch market data for ${sym}`);
       }
     },
     []
@@ -180,28 +296,38 @@ export function App() {
 
   // Trigger market data fetch when symbol or timeframe changes
   useEffect(() => {
+    setCandles((prev) =>
+      prev.length > 0 && prev[0].symbol === selectedSymbol && prev[0].timeframe === timeframe ? prev : []
+    );
     fetchMarketDataForSymbol(selectedSymbol, timeframe);
   }, [selectedSymbol, timeframe, fetchMarketDataForSymbol]);
 
-  // 3. Scan Signal for Selected Symbol
+  // 3. Scan Signal for Selected Symbol & Trading Style
   const handleScanSignal = useCallback(async () => {
+    const reqId = ++scanReqSeqRef.current;
+    const scanSymbol = selectedSymbol;
+    const scanTradeType = selectedTradeType;
     setIsScanning(true);
     try {
-      const { signal, quote, dataSource: ds } = await API.scanSignal(
-        selectedSymbol,
-        selectedTradeType,
+      const { signal, quote, dataSource: ds, dataState: nextState } = await API.scanSignal(
+        scanSymbol,
+        scanTradeType,
         riskSettings
       );
 
-      setSignals((prev) => ({ ...prev, [selectedSymbol]: signal }));
-      setQuotes((prev) => ({ ...prev, [selectedSymbol]: quote }));
+      if (reqId !== scanReqSeqRef.current) return;
+
+      setSignals((prev) => ({ ...prev, [getSignalKey(scanSymbol, scanTradeType)]: signal }));
+      setQuotes((prev) => ({ ...prev, [scanSymbol]: quote }));
       setDataSource(ds);
+      if (nextState) setDataState(nextState);
 
       // Play acoustic chime
       playSignalChime(signal.direction, audioMuted);
 
       // Refresh journal & performance
       const [jData, pData] = await Promise.all([API.getJournal(), API.getPerformance()]);
+      if (reqId !== scanReqSeqRef.current) return;
       setJournal(jData.signals);
       setPerformance(pData);
 
@@ -216,7 +342,9 @@ export function App() {
     } catch (err) {
       console.error('Scan error:', err);
     } finally {
-      setIsScanning(false);
+      if (reqId === scanReqSeqRef.current) {
+        setIsScanning(false);
+      }
     }
   }, [selectedSymbol, selectedTradeType, riskSettings, audioMuted, addNotification]);
 
@@ -226,25 +354,55 @@ export function App() {
   }, [selectedSymbol, selectedTradeType]);
 
   // 4. Background Multi-Tier Live Market Refresh Loop
-  // TIER 1: Continuous Live Quote Refresh & Signal Outcome Tracker (every 5000ms by default)
+  // TIER 1: Continuous Live Quote Refresh, Forming-Candle Price Sync & Signal Outcome Tracker (every 5000ms by default)
   useEffect(() => {
     const quoteIntervalMs = engineStatus?.refreshIntervals?.quoteRefreshMs || 5000;
     const interval = setInterval(async () => {
+      const symSnapshot = selectedSymbol;
+      const tfSnapshot = timeframe;
       try {
         const [tickRes, engStatus] = await Promise.all([
-          API.trackerTick(selectedSymbol),
-          API.getEngineStatus(selectedSymbol).catch(() => null),
+          API.trackerTick(symSnapshot),
+          API.getEngineStatus(symSnapshot).catch(() => null),
         ]);
 
         if (tickRes.performance) {
           setPerformance(tickRes.performance);
         }
+
+        if (tickRes.quote && tickRes.quote.price > 0 && tickRes.quote.status !== 'UNAVAILABLE') {
+          setQuotes((prev) => ({ ...prev, [symSnapshot]: tickRes.quote as MarketQuote }));
+          if (tickRes.dataSource) setDataSource(tickRes.dataSource);
+          setLastUpdated(tickRes.lastUpdated || tickRes.quote.timestamp || Date.now());
+          setProviderError(null);
+          if (tickRes.quote.marketStatus) {
+            setMarketStatus(tickRes.quote.marketStatus);
+          }
+
+          // Synchronize current forming candle using genuine live market price
+          setCandles((prev) =>
+            prev.length > 0 && prev[0].symbol === symSnapshot && prev[0].timeframe === tfSnapshot
+              ? applyLiveQuoteToCandles(prev, tickRes.quote, tfSnapshot)
+              : prev
+          );
+          setH1Candles((prev) =>
+            prev.length > 0 && prev[0].symbol === symSnapshot && prev[0].timeframe === 'H1'
+              ? applyLiveQuoteToCandles(prev, tickRes.quote, 'H1')
+              : prev
+          );
+        }
+
+        if (tickRes.dataState) {
+          setDataState(tickRes.dataState);
+          if (tickRes.dataState === 'DISCONNECTED') {
+            setProviderError(tickRes.quote?.errorMessage || `Live data temporarily unavailable for ${symSnapshot}`);
+          }
+        }
+
         if (engStatus) {
           setEngineStatus(engStatus);
           if (engStatus.marketFeed === 'OFFLINE') {
             setMarketStatus('CLOSED');
-          } else {
-            setMarketStatus('OPEN');
           }
         }
 
@@ -277,7 +435,7 @@ export function App() {
     }, quoteIntervalMs);
 
     return () => clearInterval(interval);
-  }, [selectedSymbol, audioMuted, addNotification, engineStatus?.refreshIntervals?.quoteRefreshMs]);
+  }, [selectedSymbol, timeframe, audioMuted, addNotification, engineStatus?.refreshIntervals?.quoteRefreshMs]);
 
   // TIER 2: Live Candlestick Sync (every 15000ms by default)
   useEffect(() => {
@@ -383,11 +541,10 @@ export function App() {
         <MarketWatch
           instruments={instruments}
           quotes={quotes}
-          signals={signals}
+          signals={signalsBySymbol}
           selectedSymbol={selectedSymbol}
           onSelectSymbol={(sym) => {
             setSelectedSymbol(sym);
-            fetchMarketDataForSymbol(sym, timeframe);
           }}
           onOpenAddModal={() => setIsAddModalOpen(true)}
         />
@@ -404,9 +561,12 @@ export function App() {
                 timeframe={timeframe}
                 onSelectTimeframe={(tf) => {
                   setTimeframe(tf);
-                  fetchMarketDataForSymbol(selectedSymbol, tf);
                 }}
                 activeSignal={activeSignal}
+                dataSource={dataSource}
+                dataState={dataState}
+                lastUpdated={lastUpdated}
+                providerError={providerError}
               />
             </div>
 
@@ -416,7 +576,7 @@ export function App() {
                 signal={activeSignal}
                 instrument={currentInstrument}
                 selectedTradeType={selectedTradeType}
-                onSelectTradeType={setSelectedTradeType}
+                onSelectTradeType={handleSelectTradeType}
                 onTriggerScan={handleScanSignal}
                 isScanning={isScanning}
               />
@@ -432,6 +592,10 @@ export function App() {
             candles={candles}
             h1Candles={h1Candles}
             tradeType={selectedTradeType}
+            onSelectTradeType={handleSelectTradeType}
+            dataSource={dataSource}
+            dataState={dataState}
+            lastUpdated={lastUpdated}
           />
         )}
 
@@ -440,7 +604,7 @@ export function App() {
             signals={journal}
             onSelectSignal={(sig) => {
               setSelectedSymbol(sig.instrument);
-              setSelectedTradeType(sig.tradeType);
+              handleSelectTradeType(sig.tradeType);
               setActiveView('TERMINAL');
             }}
             onRefresh={async () => {
@@ -465,7 +629,6 @@ export function App() {
             selectedSymbol={selectedSymbol}
             onSelectSymbol={(sym) => {
               setSelectedSymbol(sym);
-              fetchMarketDataForSymbol(sym, timeframe);
             }}
             fetchLiveCandles={async (sym, tf) => {
               try {

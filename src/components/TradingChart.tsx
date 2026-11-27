@@ -12,8 +12,10 @@ import {
   Radio,
   Clock,
   Sparkles,
+  AlertTriangle,
+  WifiOff,
 } from 'lucide-react';
-import { MarketCandle, Timeframe, Signal, InstrumentConfig } from '../types';
+import { MarketCandle, Timeframe, Signal, InstrumentConfig, DataSyncState } from '../types';
 import { computeIndicators, analyzeMarketStructure } from '../utils/indicators';
 import { getCandleCountdown } from '../utils/candleLifecycle';
 
@@ -24,6 +26,10 @@ interface TradingChartProps {
   timeframe: Timeframe;
   onSelectTimeframe: (tf: Timeframe) => void;
   activeSignal?: Signal | null;
+  dataSource?: string;
+  dataState?: DataSyncState;
+  lastUpdated?: number;
+  providerError?: string | null;
 }
 
 export const TradingChart: React.FC<TradingChartProps> = ({
@@ -33,6 +39,10 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   timeframe,
   onSelectTimeframe,
   activeSignal,
+  dataSource = 'Twelve Data',
+  dataState = 'LIVE',
+  lastUpdated,
+  providerError,
 }) => {
   // DOM References
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -969,17 +979,76 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] text-slate-400 font-mono">
+              Provider: <strong className="text-slate-200">{dataSource}</strong>
+            </span>
+            <span className="text-slate-700">|</span>
+            <span className="text-[10px] text-slate-400 font-mono">
+              Updated: <strong className="text-slate-300">{lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : '--:--:--'}</strong>
+            </span>
+            <span className="text-slate-700">|</span>
             <span className="text-sky-400 font-semibold text-[10px]">
               {timeframe} Bar Ends in: <span className="text-white font-bold">{countdownStr}</span>
             </span>
             {!hoveredCandle && (
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-blue-950/70 text-blue-300 border border-blue-800/50">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping"></span>
-                FORMING
+              <span
+                id="chart-data-state-badge"
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                  dataState === 'LIVE'
+                    ? 'bg-emerald-950/70 text-emerald-300 border-emerald-700/60'
+                    : dataState === 'DELAYED'
+                    ? 'bg-amber-950/70 text-amber-300 border-amber-700/60'
+                    : dataState === 'HISTORICAL'
+                    ? 'bg-slate-800 text-slate-300 border-slate-700'
+                    : 'bg-rose-950/70 text-rose-300 border-rose-700/60'
+                }`}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    dataState === 'LIVE'
+                      ? 'bg-emerald-400 animate-ping'
+                      : dataState === 'DELAYED'
+                      ? 'bg-amber-400'
+                      : dataState === 'HISTORICAL'
+                      ? 'bg-slate-400'
+                      : 'bg-rose-400'
+                  }`}
+                ></span>
+                {dataState === 'LIVE' ? 'LIVE FORMING' : dataState}
               </span>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Disconnected / Delayed Warning Banner */}
+      {(dataState === 'DISCONNECTED' || dataState === 'DELAYED' || dataState === 'HISTORICAL') && candles.length > 0 && (
+        <div
+          id="chart-data-warning"
+          className={`mb-2 px-3 py-1.5 rounded border text-[11px] flex items-center justify-between gap-2 ${
+            dataState === 'DISCONNECTED'
+              ? 'bg-rose-950/40 border-rose-800/50 text-rose-300'
+              : dataState === 'DELAYED'
+              ? 'bg-amber-950/40 border-amber-800/50 text-amber-300'
+              : 'bg-slate-800/60 border-slate-700 text-slate-300'
+          }`}
+        >
+          <span className="flex items-center gap-1.5">
+            {dataState === 'DISCONNECTED' ? (
+              <WifiOff className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            )}
+            <span>
+              {dataState === 'DISCONNECTED'
+                ? providerError || `Live feed disconnected for ${symbol} (${timeframe}). No synthetic candles are generated.`
+                : dataState === 'DELAYED'
+                ? `Feed delayed / rate-limited for ${symbol} (${timeframe}) via ${dataSource}. Displaying verified cached market bars.`
+                : `Market session closed for ${symbol}. Showing verified ${timeframe} historical OHLC bars via ${dataSource}.`}
+            </span>
+          </span>
+          <span className="font-mono text-[10px] uppercase font-bold shrink-0">{dataState}</span>
         </div>
       )}
 
@@ -992,14 +1061,15 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         {candles.length === 0 ? (
           <div className="text-center p-6 space-y-3">
             <div className="w-12 h-12 rounded-full bg-slate-800/80 border border-slate-700 flex items-center justify-center mx-auto text-amber-400">
-              <Layers className="w-6 h-6" />
+              {dataState === 'DISCONNECTED' ? <WifiOff className="w-6 h-6 text-rose-400" /> : <Layers className="w-6 h-6" />}
             </div>
             <div>
               <p className="text-sm font-bold text-slate-200">
-                DATA NOT AVAILABLE FROM CURRENT PROVIDER
+                {dataState === 'DISCONNECTED' ? 'LIVE DATA UNAVAILABLE — DISCONNECTED' : 'DATA NOT AVAILABLE FROM CURRENT PROVIDER'}
               </p>
               <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1">
-                Historical candle series for {symbol} on {timeframe} is unavailable on the current Twelve Data tier or waiting for data stream.
+                {providerError ||
+                  `Genuine OHLC candle series for ${symbol} on ${timeframe} via ${dataSource} is temporarily unavailable or awaiting provider stream.`}
               </p>
             </div>
           </div>

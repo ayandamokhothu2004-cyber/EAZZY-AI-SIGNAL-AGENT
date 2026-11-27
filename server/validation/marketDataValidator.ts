@@ -9,6 +9,44 @@ export interface ValidationResult {
 }
 
 /**
+ * Parses provider candle datetime strings strictly in UTC when timezone offset is omitted.
+ */
+export function parseProviderTimestamp(rawDatetime: string | number | undefined): number {
+  if (typeof rawDatetime === 'number') {
+    return rawDatetime > 1e11 ? rawDatetime : rawDatetime * 1000;
+  }
+  if (!rawDatetime) return NaN;
+
+  const dtStr = String(rawDatetime).trim();
+  if (!dtStr) return NaN;
+
+  // Numeric string epoch
+  if (/^\d+$/.test(dtStr)) {
+    const num = Number(dtStr);
+    return num > 1e11 ? num : num * 1000;
+  }
+
+  // Has explicit timezone offset (Z, +HH:MM, -HH:MM, GMT, UTC)
+  if (/(?:Z|[+-]\d{2}:?\d{2}|GMT|UTC)$/i.test(dtStr)) {
+    return new Date(dtStr).getTime();
+  }
+
+  // Date-only format (D1 bars e.g. '2026-11-27') -> midnight UTC
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dtStr)) {
+    return new Date(`${dtStr}T00:00:00Z`).getTime();
+  }
+
+  // 'YYYY-MM-DD HH:mm:ss' -> 'YYYY-MM-DDTHH:mm:ssZ' (when queried with timezone=UTC)
+  const normalizedIso = dtStr.includes('T') ? `${dtStr}Z` : `${dtStr.replace(' ', 'T')}Z`;
+  const parsed = new Date(normalizedIso).getTime();
+  if (Number.isFinite(parsed)) {
+    return parsed;
+  }
+
+  return new Date(dtStr).getTime();
+}
+
+/**
  * Validates candle geometry, time ordering, and value sanity.
  */
 export function validateMarketCandles(
@@ -45,16 +83,11 @@ export function validateMarketCandles(
 
     let time: number;
     if (typeof c.time === 'number') {
-      time = c.time;
+      time = c.time > 1e11 ? c.time : c.time * 1000;
     } else if (typeof c.timestamp === 'number') {
       time = c.timestamp > 1e11 ? c.timestamp : c.timestamp * 1000;
     } else {
-      const dtStr = String(c.datetime || c.date || c.time || '');
-      const isoStr = dtStr.includes('T') || dtStr.endsWith('Z') ? dtStr : dtStr.replace(' ', 'T') + 'Z';
-      time = new Date(isoStr).getTime();
-      if (!Number.isFinite(time)) {
-        time = new Date(dtStr).getTime();
-      }
+      time = parseProviderTimestamp(c.datetime || c.date || c.time);
     }
     const open = parseFloat(c.open);
     const high = parseFloat(c.high);
@@ -84,9 +117,9 @@ export function validateMarketCandles(
       continue;
     }
 
-    // Future timestamp check (allowing exchange timezone offset up to 24 hours)
-    if (time > now + 24 * 3600 * 1000) {
-      errors.push(`Future timestamp detected at index ${i}: ${new Date(time).toISOString()}`);
+    // Strict future timestamp check (only small 10-minute clock skew allowed; blocks timezone-shifted candles)
+    if (time > now + 10 * 60 * 1000) {
+      warnings.push(`Future-shifted timestamp filtered at index ${i}: ${new Date(time).toISOString()}`);
       continue;
     }
 
@@ -114,6 +147,8 @@ export function validateMarketCandles(
 
     parsedCandles.push({
       time,
+      timestamp: time,
+      datetime: new Date(time).toISOString(),
       open,
       high: safeHigh,
       low: safeLow,

@@ -7,6 +7,7 @@ import {
   MarketStructure,
   MarketRegime,
   StrategyResult,
+  TradeType,
 } from '../types';
 import { SupportResistanceAnalysisResult } from './supportResistance';
 import { VolatilityAnalysisResult } from './volatilityEngine';
@@ -14,6 +15,7 @@ import { MomentumAnalysisResult } from './momentumEngine';
 
 export interface ConfluenceInput {
   targetDirection: 'BUY' | 'SELL' | 'WAIT';
+  tradeType?: TradeType;
   marketRegime: MarketRegime;
   mtfTrends: MultiTimeframeTrendReport;
   marketStructure: MarketStructure;
@@ -48,6 +50,13 @@ export function evaluateConfluenceEngine(input: ConfluenceInput): {
 
   const evidence: ConfluenceEvidence[] = [];
 
+  const styleTag =
+    input.tradeType === 'SCALP'
+      ? 'Scalp (M5/M15)'
+      : input.tradeType === 'SWING'
+      ? 'Swing (H1/H4)'
+      : 'Day Trade (M15/H1)';
+
   // --- 1. Multi-Timeframe Alignment (Max 20 pts) ---
   let htfAlignment = 0;
   if (targetDirection !== 'WAIT') {
@@ -58,7 +67,7 @@ export function evaluateConfluenceEngine(input: ConfluenceInput): {
     if (h4Bias === expectedBias && h1Bias === expectedBias && m15Bias === expectedBias) {
       htfAlignment = 20;
       evidence.push({
-        source: 'Multi-Timeframe Trend (H4+H1+M15)',
+        source: `Multi-Timeframe Trend (${styleTag})`,
         classification: 'STRONG_SUPPORT',
         bias: expectedBias,
         weight: 20,
@@ -67,7 +76,7 @@ export function evaluateConfluenceEngine(input: ConfluenceInput): {
     } else if (h4Bias === expectedBias && h1Bias === expectedBias) {
       htfAlignment = 16;
       evidence.push({
-        source: 'Macro Trend (H4+H1)',
+        source: `Macro Trend (${styleTag})`,
         classification: 'STRONG_SUPPORT',
         bias: expectedBias,
         weight: 16,
@@ -76,7 +85,7 @@ export function evaluateConfluenceEngine(input: ConfluenceInput): {
     } else if (h1Bias === expectedBias) {
       htfAlignment = 10;
       evidence.push({
-        source: 'Intermediate Trend (H1)',
+        source: `Intermediate Trend (${styleTag})`,
         classification: 'SUPPORT',
         bias: expectedBias,
         weight: 10,
@@ -85,7 +94,7 @@ export function evaluateConfluenceEngine(input: ConfluenceInput): {
     } else if (h4Bias !== 'NEUTRAL' && h4Bias !== expectedBias) {
       htfAlignment = 0;
       evidence.push({
-        source: 'Macro Trend Conflict (H4)',
+        source: `Macro Trend Conflict (${styleTag})`,
         classification: 'STRONG_CONFLICT',
         bias: h4Bias,
         weight: 20,
@@ -94,7 +103,7 @@ export function evaluateConfluenceEngine(input: ConfluenceInput): {
     } else {
       htfAlignment = 5;
       evidence.push({
-        source: 'Multi-Timeframe Trend',
+        source: `Multi-Timeframe Trend (${styleTag})`,
         classification: 'NEUTRAL',
         bias: 'NEUTRAL',
         weight: 5,

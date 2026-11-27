@@ -24,6 +24,7 @@ import {
   MarketCandle,
   Timeframe,
   TradeType,
+  DataSyncState,
 } from '../types';
 import { computeIndicators, analyzeMarketStructure } from '../utils/indicators';
 import { runComprehensiveStrategyEngine } from '../strategies';
@@ -35,7 +36,37 @@ interface MarketAnalysisViewProps {
   candles: MarketCandle[];
   h1Candles: MarketCandle[];
   tradeType: TradeType;
+  onSelectTradeType?: (type: TradeType) => void;
+  dataSource?: string;
+  dataState?: DataSyncState;
+  lastUpdated?: number;
 }
+
+const TRADE_STYLE_PROFILES: {
+  type: TradeType;
+  label: string;
+  timeframes: string;
+  summary: string;
+}[] = [
+  {
+    type: 'SCALP',
+    label: 'Scalp',
+    timeframes: 'M5 / M15',
+    summary: 'Short-term structure, M5/M15 liquidity sweeps & rapid momentum execution',
+  },
+  {
+    type: 'DAY',
+    label: 'Day Trade',
+    timeframes: 'M15 / H1',
+    summary: 'Intraday session structure, H1/M15 BOS/CHoCH, pullbacks & intraday targets',
+  },
+  {
+    type: 'SWING',
+    label: 'Swing',
+    timeframes: 'H1 / H4',
+    summary: 'Higher-timeframe macro trend (H4/H1), broader liquidity pools & multi-session setups',
+  },
+];
 
 export const MarketAnalysisView: React.FC<MarketAnalysisViewProps> = ({
   symbol,
@@ -44,6 +75,10 @@ export const MarketAnalysisView: React.FC<MarketAnalysisViewProps> = ({
   candles,
   h1Candles,
   tradeType,
+  onSelectTradeType,
+  dataSource = 'Twelve Data',
+  dataState = 'LIVE',
+  lastUpdated,
 }) => {
   const indicators = computeIndicators(candles);
   const structure = analyzeMarketStructure(candles);
@@ -51,6 +86,8 @@ export const MarketAnalysisView: React.FC<MarketAnalysisViewProps> = ({
 
   const lastRSI = indicators.rsi[indicators.rsi.length - 1] || 50;
   const lastATR = indicators.atr[indicators.atr.length - 1] || 0.0015;
+  const activeStyleMeta =
+    TRADE_STYLE_PROFILES.find((p) => p.type === tradeType) || TRADE_STYLE_PROFILES[1];
 
   const regimeColors: Record<string, string> = {
     TRENDING_BULLISH: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
@@ -70,7 +107,7 @@ export const MarketAnalysisView: React.FC<MarketAnalysisViewProps> = ({
           <div className="flex items-center gap-3">
             <span className="text-2xl">{instrument.icon}</span>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-xl font-bold text-white uppercase">{symbol}</h2>
                 <span className="text-[10px] px-2 py-0.5 rounded bg-blue-600/10 text-blue-400 font-bold border border-blue-500/30 uppercase">
                   {instrument.assetClass}
@@ -78,16 +115,53 @@ export const MarketAnalysisView: React.FC<MarketAnalysisViewProps> = ({
                 <span className={`text-[10px] px-2.5 py-0.5 rounded font-bold border uppercase ${regimeColors[report.marketRegime.regime] || regimeColors.UNCLEAR}`}>
                   Regime: {report.marketRegime.regime.replace(/_/g, ' ')}
                 </span>
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded font-bold border uppercase ${
+                    dataState === 'LIVE'
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                      : dataState === 'DELAYED'
+                      ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                      : dataState === 'HISTORICAL'
+                      ? 'bg-slate-800 text-slate-300 border-slate-700'
+                      : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                  }`}
+                >
+                  {dataState} • {dataSource}
+                </span>
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">{instrument.name} • {instrument.description}</p>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {instrument.name} • {instrument.description}
+                {lastUpdated ? ` • Synced ${new Date(lastUpdated).toLocaleTimeString()}` : ''}
+              </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-6 flex-wrap">
+            {/* Trading Style Selector */}
+            {onSelectTradeType && (
+              <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800">
+                {TRADE_STYLE_PROFILES.map((style) => (
+                  <button
+                    key={style.type}
+                    id={`analysis-style-btn-${style.type}`}
+                    onClick={() => onSelectTradeType(style.type)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-semibold flex flex-col items-center transition-all ${
+                      tradeType === style.type
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                    }`}
+                  >
+                    <span>{style.label}</span>
+                    <span className="text-[9px] opacity-75">{style.timeframes}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div>
               <div className="text-[10px] text-slate-500 uppercase font-semibold">Current Price</div>
               <div className="text-2xl font-bold font-mono text-white mt-0.5">
-                {quote ? quote.price.toFixed(instrument.digits) : '---'}
+                {quote && quote.price > 0 ? quote.price.toFixed(instrument.digits) : '---'}
               </div>
             </div>
 
@@ -110,11 +184,14 @@ export const MarketAnalysisView: React.FC<MarketAnalysisViewProps> = ({
           </div>
         </div>
 
-        {/* Market Regime Details Banner */}
+        {/* Market Regime & Active Trading Style Details Banner */}
         <div className="bg-slate-800/40 p-3.5 rounded-lg border border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-2">
             <Compass className="w-4 h-4 text-blue-400 flex-shrink-0" />
-            <span className="text-slate-300 font-medium">{report.marketRegime.description}</span>
+            <span className="text-slate-300 font-medium">
+              <strong className="text-blue-300 uppercase mr-1.5">{activeStyleMeta.label} Focus:</strong>
+              {activeStyleMeta.summary} • {report.marketRegime.description}
+            </span>
           </div>
           <div className="flex items-center gap-4 text-[11px] font-mono text-slate-400">
             <span>Characteristic: <strong className="text-white font-sans">{report.marketRegime.primaryCharacteristic}</strong></span>

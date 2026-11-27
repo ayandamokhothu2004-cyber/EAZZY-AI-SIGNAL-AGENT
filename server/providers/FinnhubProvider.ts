@@ -330,11 +330,11 @@ export class FinnhubProvider implements MarketDataProvider {
       case 'SOL/USD':
         return { symbol: 'BINANCE:SOLUSDT', endpointType: 'crypto', fallbackSymbol: 'COINBASE:SOL-USD' };
 
-      // Commodities (Gold / Silver ETFs)
+      // Commodities (Spot metals - never mix GLD/SLV ETF share price into spot XAU/XAG pricing)
       case 'XAU/USD':
-        return { symbol: 'GLD', endpointType: 'stock', fallbackSymbol: 'OANDA:XAU_USD' };
+        return { symbol: 'OANDA:XAU_USD', endpointType: 'forex', isForexPlanRestricted: true };
       case 'XAG/USD':
-        return { symbol: 'SLV', endpointType: 'stock', fallbackSymbol: 'OANDA:XAG_USD' };
+        return { symbol: 'OANDA:XAG_USD', endpointType: 'forex', isForexPlanRestricted: true };
 
       // Indices (US ETFs)
       case 'NAS100':
@@ -820,23 +820,39 @@ export class FinnhubProvider implements MarketDataProvider {
     targetTf: Timeframe,
     symbol: string
   ): MarketCandle[] {
+    if (candles.length === 0) return [];
+    const bucketMs = factor * 60 * 60 * 1000;
+    const buckets = new Map<number, MarketCandle[]>();
+
+    for (const c of candles) {
+      const t = c.time || c.timestamp || 0;
+      if (!t) continue;
+      const bucketStart = Math.floor(t / bucketMs) * bucketMs;
+      const existing = buckets.get(bucketStart);
+      if (existing) {
+        existing.push(c);
+      } else {
+        buckets.set(bucketStart, [c]);
+      }
+    }
+
+    const sortedBuckets = Array.from(buckets.entries()).sort((a, b) => a[0] - b[0]);
     const aggregated: MarketCandle[] = [];
 
-    for (let i = 0; i < candles.length; i += factor) {
-      const slice = candles.slice(i, i + factor);
+    for (const [bucketStart, slice] of sortedBuckets) {
       if (slice.length === 0) continue;
+      slice.sort((a, b) => a.time - b.time);
 
       const open = slice[0].open;
       const close = slice[slice.length - 1].close;
       const high = Math.max(...slice.map((c) => c.high));
       const low = Math.min(...slice.map((c) => c.low));
       const volume = slice.reduce((acc, c) => acc + (c.volume || 0), 0);
-      const time = slice[0].time;
 
       aggregated.push({
-        time,
-        timestamp: time,
-        datetime: new Date(time).toISOString(),
+        time: bucketStart,
+        timestamp: bucketStart,
+        datetime: new Date(bucketStart).toISOString(),
         open,
         high,
         low,

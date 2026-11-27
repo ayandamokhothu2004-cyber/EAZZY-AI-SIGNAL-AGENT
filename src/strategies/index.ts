@@ -124,11 +124,13 @@ export function runComprehensiveStrategyEngine(
   const mtfTrends = evaluateMultiTimeframeTrends(tfMap);
 
   // 4. Modular Strategy Analyses (Individual Strategies)
-  const trendResult = analyzeTrendFollowingStrategy(entryCandles, indicators, tradeType === 'SCALP' ? 'M5' : 'H1');
-  const breakoutResult = analyzeBreakoutStrategy(entryCandles, indicators, tradeType === 'SCALP' ? 'M5' : 'M15');
-  const pullbackResult = analyzePullbackStrategy(entryCandles, indicators, tradeType === 'SCALP' ? 'M5' : 'M15');
-  const srResult = analyzeSupportResistanceStrategy(entryCandles, indicators, tradeType === 'SCALP' ? 'M15' : 'H1');
-  const liquidityResult = analyzeLiquiditySweepStrategy(entryCandles, structure, tradeType === 'SCALP' ? 'M5' : 'M15');
+  const trendTF: Timeframe = tradeType === 'SCALP' ? 'M15' : tradeType === 'SWING' ? 'H4' : 'H1';
+  const entryExecTF: Timeframe = tradeType === 'SCALP' ? 'M5' : tradeType === 'SWING' ? 'H1' : 'M15';
+  const trendResult = analyzeTrendFollowingStrategy(entryCandles, indicators, trendTF);
+  const breakoutResult = analyzeBreakoutStrategy(entryCandles, indicators, entryExecTF);
+  const pullbackResult = analyzePullbackStrategy(entryCandles, indicators, entryExecTF);
+  const srResult = analyzeSupportResistanceStrategy(entryCandles, indicators, trendTF);
+  const liquidityResult = analyzeLiquiditySweepStrategy(entryCandles, structure, entryExecTF);
 
   const strategyResults: StrategyResult[] = [
     trendResult,
@@ -186,6 +188,7 @@ export function runComprehensiveStrategyEngine(
 
   const { confluence, confidenceBreakdown } = evaluateConfluenceEngine({
     targetDirection,
+    tradeType,
     marketRegime,
     mtfTrends,
     marketStructure: structure,

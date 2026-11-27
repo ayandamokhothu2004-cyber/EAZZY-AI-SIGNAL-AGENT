@@ -400,5 +400,750 @@
       "volatility": true,
       "mtfConfluence": true
     }
+  },
+  {
+    "id": "SIG-XAUUSD-MWYT959M-978",
+    "signalId": "SIG-XAUUSD-MWYT959M-978",
+    "instrument": "XAU/USD",
+    "symbol": "XAU/USD",
+    "assetClass": "COMMODITIES",
+    "direction": "BUY",
+    "tradeType": "SCALP",
+    "timeframe": "M5",
+    "strategy": "TREND_FOLLOWING",
+    "candleTimestamp": 1795773300000,
+    "scanTimestamp": 1795773630450,
+    "timestamp": 1795773630450,
+    "createdAt": 1795773630450,
+    "provider": "Twelve Data (Live Direct)",
+    "dataSource": "Twelve Data (Live Direct)",
+    "marketPriceAtCreation": 3673.36,
+    "setupFingerprint": "XAUUSD:BUY:TREND_FOLLOWING:M5:1795773300000:3672.3900-3673.9400",
+    "currentPrice": 3673.36,
+    "suggestedEntry": 3673.36,
+    "entry": 3673.36,
+    "entryZone": {
+      "low": 3672.39,
+      "high": 3673.94
+    },
+    "stopLoss": 3666.85,
+    "takeProfit1": 3685.82,
+    "takeProfit2": 3694.17,
+    "riskRewardRatio": 1.92,
+    "riskReward": 1.92,
+    "aiConfidence": 83,
+    "confidenceScore": 83,
+    "confidenceBreakdown": {
+      "htfAlignment": 10,
+      "marketStructure": 12,
+      "entryConfirmation": 15,
+      "momentumAlignment": 5,
+      "liquidityCondition": 5,
+      "srClearance": 10,
+      "volatilitySuitability": 10,
+      "riskRewardRatio": 8,
+      "strategyAgreement": 8,
+      "conflictingPenalty": 0,
+      "totalScore": 83
+    },
+    "marketBias": "BULLISH",
+    "marketRegime": {
+      "regime": "LOW_VOLATILITY",
+      "confidence": 80,
+      "description": "Low volatility compression. Bollinger Bands are tightly squeezed (0.4099), indicating imminent energy build-up.",
+      "adxOrTrendSlope": 0.0057,
+      "atrPercent": 0.105,
+      "rangeWidthPercent": 0.438,
+      "primaryCharacteristic": "Tight Volatility Compression"
+    },
+    "strategyResults": [
+      {
+        "strategyName": "TREND_FOLLOWING",
+        "direction": "BUY",
+        "valid": true,
+        "strength": 65,
+        "timeframe": "M15",
+        "reason": "Price (3673.3567) is aligned with bullish moving average hierarchy (EMA 20/50/200). Trend strength: 65/100.",
+        "conditions": [
+          "Bullish Pullback into EMA 20-50 Value Zone"
+        ],
+        "entryZone": {
+          "low": 3666.78251,
+          "high": 3673.35668
+        },
+        "invalidationLevel": 3649.47749
+      },
+      {
+        "strategyName": "BREAKOUT",
+        "direction": "NONE",
+        "valid": false,
+        "strength": 0,
+        "timeframe": "M5",
+        "reason": "Price remains within 20-period range [3666.7795 - 3684.8699]. No breakout confirmed.",
+        "conditions": []
+      },
+      {
+        "strategyName": "PULLBACK",
+        "direction": "NONE",
+        "valid": false,
+        "strength": 0,
+        "timeframe": "M5",
+        "reason": "Price is not currently retesting any major dynamic EMA or Fibonacci retracement zone.",
+        "conditions": []
+      },
+      {
+        "strategyName": "SUPPORT_RESISTANCE",
+        "direction": "BUY",
+        "valid": true,
+        "strength": 75,
+        "timeframe": "M15",
+        "reason": "Price is interacting directly with validated institutional demand at 3672.4098. High probability bounce territory.",
+        "conditions": [
+          "Price Testing Key Support Floor",
+          "Congested S/R Geometry (Tight Space)",
+          "Direct Confluence with Pivot PP"
+        ],
+        "entryZone": {
+          "low": 3668.73738021,
+          "high": 3673.35668
+        },
+        "invalidationLevel": 3665.06497042
+      },
+      {
+        "strategyName": "LIQUIDITY_SWEEP",
+        "direction": "NONE",
+        "valid": false,
+        "strength": 30,
+        "timeframe": "M5",
+        "reason": "Liquidity probe at 3677.2137 has not confirmed structural return/absorption.",
+        "conditions": []
+      }
+    ],
+    "confluence": {
+      "overallConfluence": "HIGH",
+      "aggregateScore": 83,
+      "evidence": [
+        {
+          "source": "Intermediate Trend (Scalp (M5/M15))",
+          "classification": "SUPPORT",
+          "bias": "BULLISH",
+          "weight": 10,
+          "detail": "H1 bias confirms BULLISH, though higher timeframe H4 is NEUTRAL."
+        },
+        {
+          "source": "Price Action Progression",
+          "classification": "SUPPORT",
+          "bias": "BULLISH",
+          "weight": 12,
+          "detail": "Progressive Higher Highs / Higher Lows without structure breach."
+        },
+        {
+          "source": "Multi-Strategy Trigger Confirmation",
+          "classification": "STRONG_SUPPORT",
+          "bias": "BULLISH",
+          "weight": 15,
+          "detail": "Multiple independent triggers active (TREND_FOLLOWING, SUPPORT_RESISTANCE)."
+        },
+        {
+          "source": "Momentum State",
+          "classification": "NEUTRAL",
+          "bias": "NEUTRAL",
+          "weight": 5,
+          "detail": "Momentum hovering near equilibrium."
+        },
+        {
+          "source": "Key S/R Level Interaction",
+          "classification": "STRONG_SUPPORT",
+          "bias": "BULLISH",
+          "weight": 10,
+          "detail": "Price is interacting directly with validated institutional demand at 3672.4098. High probability bounce territory."
+        },
+        {
+          "source": "Volatility Regime",
+          "classification": "SUPPORT",
+          "bias": "NEUTRAL",
+          "weight": 10,
+          "detail": "Healthy, normal volatility regime (ATR 3.8596, 0.11% of price)."
+        }
+      ],
+      "dominantBias": "BULLISH",
+      "supportingCount": 5,
+      "conflictingCount": 0
+    },
+    "reasons": [
+      "Bullish multi-timeframe order flow and structure confluence confirmed.",
+      "[TREND_FOLLOWING] Price (3673.3567) is aligned with bullish moving average hierarchy (EMA 20/50/200). Trend strength: 65/100.",
+      "[SUPPORT_RESISTANCE] Price is interacting directly with validated institutional demand at 3672.4098. High probability bounce territory."
+    ],
+    "setupExplanation": "XAU/USD presents a bullish scalp retracement on the M5 entry timeframe aligned with the M15 bullish context, pulling back into the EMA ribbon between EMA 20 (3676.0876) and EMA 50 (3666.7825). Price is resting on a validated demand floor near the bullish BOS at 3673.36 while maintaining the broader higher-high and higher-low structure. A push back above EMA 20 (3676.0876) is needed to confirm momentum recovery from neutral RSI (49.6) and negative MACD Histogram (-1.49839).",
+    "conditionsDetected": [
+      "Trend Following: Bullish Retracement to EMA Ribbon",
+      "Support Confluence: Validated Demand Floor",
+      "Market Structure: Bearish Change of Character (CHoCH)",
+      "MTF Confluence: M15 Context aligns with M5 Entry (BULLISH)"
+    ],
+    "invalidationCondition": "A confirmed M5 close below the EMA 50 at 3666.7825 and breach of the validated demand floor, which would break the higher-low sequence and confirm the bearish CHoCH.",
+    "invalidation": "A confirmed M5 close below the EMA 50 at 3666.7825 and breach of the validated demand floor, which would break the higher-low sequence and confirm the bearish CHoCH.",
+    "status": "ACTIVE",
+    "timeframeUsed": {
+      "context": "M15",
+      "entry": "M5"
+    },
+    "confidenceFactors": [
+      {
+        "name": "Intermediate Trend (Scalp (M5/M15))",
+        "category": "SUPPORT",
+        "weight": 10,
+        "score": 80,
+        "detail": "H1 bias confirms BULLISH, though higher timeframe H4 is NEUTRAL."
+      },
+      {
+        "name": "Price Action Progression",
+        "category": "SUPPORT",
+        "weight": 12,
+        "score": 80,
+        "detail": "Progressive Higher Highs / Higher Lows without structure breach."
+      },
+      {
+        "name": "Multi-Strategy Trigger Confirmation",
+        "category": "STRONG_SUPPORT",
+        "weight": 15,
+        "score": 100,
+        "detail": "Multiple independent triggers active (TREND_FOLLOWING, SUPPORT_RESISTANCE)."
+      },
+      {
+        "name": "Momentum State",
+        "category": "NEUTRAL",
+        "weight": 5,
+        "score": 50,
+        "detail": "Momentum hovering near equilibrium."
+      },
+      {
+        "name": "Key S/R Level Interaction",
+        "category": "STRONG_SUPPORT",
+        "weight": 10,
+        "score": 100,
+        "detail": "Price is interacting directly with validated institutional demand at 3672.4098. High probability bounce territory."
+      },
+      {
+        "name": "Volatility Regime",
+        "category": "SUPPORT",
+        "weight": 10,
+        "score": 80,
+        "detail": "Healthy, normal volatility regime (ATR 3.8596, 0.11% of price)."
+      }
+    ],
+    "strategyBreakdown": {
+      "trendFollowing": true,
+      "breakout": false,
+      "pullback": false,
+      "supportResistance": true,
+      "marketStructure": true,
+      "liquiditySweep": false,
+      "momentum": false,
+      "volatility": false,
+      "mtfConfluence": true
+    },
+    "newsRisk": {
+      "symbol": "XAU/USD",
+      "riskLevel": "UNKNOWN",
+      "notes": "No high-impact economic news embargo active for this instrument.",
+      "timestamp": 1795773630450
+    }
+  },
+  {
+    "id": "SIG-XAUUSD-MWYT9D51-569",
+    "signalId": "SIG-XAUUSD-MWYT9D51-569",
+    "instrument": "XAU/USD",
+    "symbol": "XAU/USD",
+    "assetClass": "COMMODITIES",
+    "direction": "BUY",
+    "tradeType": "DAY",
+    "timeframe": "M15",
+    "strategy": "TREND_FOLLOWING",
+    "candleTimestamp": 1795772700000,
+    "scanTimestamp": 1795773640647,
+    "timestamp": 1795773640647,
+    "createdAt": 1795773640647,
+    "provider": "Twelve Data (Live Direct)",
+    "dataSource": "Twelve Data (Live Direct)",
+    "marketPriceAtCreation": 3673.36,
+    "setupFingerprint": "XAUUSD:BUY:TREND_FOLLOWING:M15:1795772700000:3671.2500-3674.6200",
+    "currentPrice": 3673.36,
+    "suggestedEntry": 3673.36,
+    "entry": 3673.36,
+    "entryZone": {
+      "low": 3671.25,
+      "high": 3674.62
+    },
+    "stopLoss": 3551.84,
+    "takeProfit1": 3916.4,
+    "takeProfit2": 4062.22,
+    "riskRewardRatio": 2,
+    "riskReward": 2,
+    "aiConfidence": 60,
+    "confidenceScore": 60,
+    "confidenceBreakdown": {
+      "htfAlignment": 10,
+      "marketStructure": 12,
+      "entryConfirmation": 11,
+      "momentumAlignment": 5,
+      "liquidityCondition": 5,
+      "srClearance": 2,
+      "volatilitySuitability": 10,
+      "riskRewardRatio": 8,
+      "strategyAgreement": 4,
+      "conflictingPenalty": -7,
+      "totalScore": 60
+    },
+    "marketBias": "BULLISH",
+    "marketRegime": {
+      "regime": "TRENDING_BULLISH",
+      "confidence": 83,
+      "description": "Sustained bullish trend. Strong positive EMA cascade (Price > EMA20 > EMA50 > EMA200) with ascending slope (+0.064%/bar).",
+      "adxOrTrendSlope": 0.0641,
+      "atrPercent": 0.229,
+      "rangeWidthPercent": 1.419,
+      "primaryCharacteristic": "Bullish Directional Order Flow"
+    },
+    "strategyResults": [
+      {
+        "strategyName": "TREND_FOLLOWING",
+        "direction": "BUY",
+        "valid": true,
+        "strength": 90,
+        "timeframe": "H1",
+        "reason": "Price (3673.3567) is aligned with bullish moving average hierarchy (EMA 20/50/200). Trend strength: 90/100.",
+        "conditions": [
+          "Bullish Multi-EMA Cascade Active"
+        ],
+        "entryZone": {
+          "low": 3660.63799,
+          "high": 3673.35668
+        },
+        "invalidationLevel": 3590.40991
+      },
+      {
+        "strategyName": "BREAKOUT",
+        "direction": "NONE",
+        "valid": false,
+        "strength": 0,
+        "timeframe": "M15",
+        "reason": "Price remains within 20-period range [3631.7271 - 3684.8699]. No breakout confirmed.",
+        "conditions": []
+      },
+      {
+        "strategyName": "PULLBACK",
+        "direction": "NONE",
+        "valid": false,
+        "strength": 0,
+        "timeframe": "M15",
+        "reason": "Price is not currently retesting any major dynamic EMA or Fibonacci retracement zone.",
+        "conditions": []
+      },
+      {
+        "strategyName": "SUPPORT_RESISTANCE",
+        "direction": "NONE",
+        "valid": false,
+        "strength": 0,
+        "timeframe": "H1",
+        "reason": "Current price (3673.3567) is floating in mid-range between nearest S1 and R1 levels.",
+        "conditions": [
+          "Equilibrium (Mid-Range Oscillation)",
+          "Congested S/R Geometry (Tight Space)"
+        ]
+      },
+      {
+        "strategyName": "LIQUIDITY_SWEEP",
+        "direction": "NONE",
+        "valid": false,
+        "strength": 30,
+        "timeframe": "M15",
+        "reason": "Liquidity probe at 3666.6671 has not confirmed structural return/absorption.",
+        "conditions": []
+      }
+    ],
+    "confluence": {
+      "overallConfluence": "MODERATE",
+      "aggregateScore": 60,
+      "evidence": [
+        {
+          "source": "Intermediate Trend (Day Trade (M15/H1))",
+          "classification": "SUPPORT",
+          "bias": "BULLISH",
+          "weight": 10,
+          "detail": "H1 bias confirms BULLISH, though higher timeframe H4 is NEUTRAL."
+        },
+        {
+          "source": "Price Action Progression",
+          "classification": "SUPPORT",
+          "bias": "BULLISH",
+          "weight": 12,
+          "detail": "Progressive Higher Highs / Higher Lows without structure breach."
+        },
+        {
+          "source": "TREND_FOLLOWING Trigger",
+          "classification": "SUPPORT",
+          "bias": "BULLISH",
+          "weight": 11,
+          "detail": "Price (3673.3567) is aligned with bullish moving average hierarchy (EMA 20/50/200). Trend strength: 90/100."
+        },
+        {
+          "source": "Momentum State",
+          "classification": "NEUTRAL",
+          "bias": "NEUTRAL",
+          "weight": 5,
+          "detail": "Momentum hovering near equilibrium."
+        },
+        {
+          "source": "Congested S/R Barrier Warning",
+          "classification": "CONFLICT",
+          "bias": "NEUTRAL",
+          "weight": 6,
+          "detail": "Nearest opposing barrier is very close to current price."
+        },
+        {
+          "source": "Volatility Regime",
+          "classification": "SUPPORT",
+          "bias": "NEUTRAL",
+          "weight": 10,
+          "detail": "Healthy, normal volatility regime (ATR 8.4101, 0.23% of price)."
+        }
+      ],
+      "dominantBias": "BULLISH",
+      "supportingCount": 4,
+      "conflictingCount": 1
+    },
+    "reasons": [
+      "Bullish multi-timeframe order flow and structure confluence confirmed.",
+      "[TREND_FOLLOWING] Price (3673.3567) is aligned with bullish moving average hierarchy (EMA 20/50/200). Trend strength: 90/100."
+    ],
+    "setupExplanation": "XAU/USD exhibits strong intraday bullish confluence across H1 and M15 timeframes, backed by a bullish multi-EMA cascade with price at 3673.35668 holding above EMA 20 (3660.6380), EMA 50 (3631.6064), and EMA 200 (3590.4099). Market structure confirms a valid Higher High and Higher Low sequence with a recent bullish BOS near 3673.36. Given the DAY trade profile, entries should favor disciplined M15 pullbacks toward dynamic EMA 20 support rather than chasing extended highs.",
+    "conditionsDetected": [
+      "Trend Following: Bullish Multi-EMA Cascade",
+      "Market Structure: Bullish Sequence (HH/HL)",
+      "MTF Confluence: H1 Context aligns with M15 Entry (BULLISH)"
+    ],
+    "invalidationCondition": "A confirmed M15 or H1 bearish Change of Character (CHoCH) breaking the most recent Higher Low sequence, accompanied by a sustained candle close below EMA 20 (3660.6380) and EMA 50 (3631.6064), invalidates the bullish continuation thesis.",
+    "invalidation": "A confirmed M15 or H1 bearish Change of Character (CHoCH) breaking the most recent Higher Low sequence, accompanied by a sustained candle close below EMA 20 (3660.6380) and EMA 50 (3631.6064), invalidates the bullish continuation thesis.",
+    "status": "ACTIVE",
+    "timeframeUsed": {
+      "context": "H1",
+      "entry": "M15"
+    },
+    "confidenceFactors": [
+      {
+        "name": "Intermediate Trend (Day Trade (M15/H1))",
+        "category": "SUPPORT",
+        "weight": 10,
+        "score": 80,
+        "detail": "H1 bias confirms BULLISH, though higher timeframe H4 is NEUTRAL."
+      },
+      {
+        "name": "Price Action Progression",
+        "category": "SUPPORT",
+        "weight": 12,
+        "score": 80,
+        "detail": "Progressive Higher Highs / Higher Lows without structure breach."
+      },
+      {
+        "name": "TREND_FOLLOWING Trigger",
+        "category": "SUPPORT",
+        "weight": 11,
+        "score": 80,
+        "detail": "Price (3673.3567) is aligned with bullish moving average hierarchy (EMA 20/50/200). Trend strength: 90/100."
+      },
+      {
+        "name": "Momentum State",
+        "category": "NEUTRAL",
+        "weight": 5,
+        "score": 50,
+        "detail": "Momentum hovering near equilibrium."
+      },
+      {
+        "name": "Congested S/R Barrier Warning",
+        "category": "CONFLICT",
+        "weight": 6,
+        "score": 20,
+        "detail": "Nearest opposing barrier is very close to current price."
+      },
+      {
+        "name": "Volatility Regime",
+        "category": "SUPPORT",
+        "weight": 10,
+        "score": 80,
+        "detail": "Healthy, normal volatility regime (ATR 8.4101, 0.23% of price)."
+      }
+    ],
+    "strategyBreakdown": {
+      "trendFollowing": true,
+      "breakout": false,
+      "pullback": false,
+      "supportResistance": false,
+      "marketStructure": true,
+      "liquiditySweep": false,
+      "momentum": false,
+      "volatility": false,
+      "mtfConfluence": true
+    },
+    "newsRisk": {
+      "symbol": "XAU/USD",
+      "riskLevel": "UNKNOWN",
+      "notes": "No high-impact economic news embargo active for this instrument.",
+      "timestamp": 1795773640647
+    }
+  },
+  {
+    "id": "SIG-XAUUSD-MWYT9K4C-630",
+    "signalId": "SIG-XAUUSD-MWYT9K4C-630",
+    "instrument": "XAU/USD",
+    "symbol": "XAU/USD",
+    "assetClass": "COMMODITIES",
+    "direction": "BUY",
+    "tradeType": "SWING",
+    "timeframe": "H1",
+    "strategy": "TREND_FOLLOWING",
+    "candleTimestamp": 1795770000000,
+    "scanTimestamp": 1795773649693,
+    "timestamp": 1795773649693,
+    "createdAt": 1795773649693,
+    "provider": "Twelve Data (Live Direct)",
+    "dataSource": "Twelve Data (Live Direct)",
+    "marketPriceAtCreation": 3673.36,
+    "setupFingerprint": "XAUUSD:BUY:TREND_FOLLOWING:H1:1795770000000:3669.0400-3675.9500",
+    "currentPrice": 3673.36,
+    "suggestedEntry": 3673.36,
+    "entry": 3673.36,
+    "entryZone": {
+      "low": 3669.04,
+      "high": 3675.95
+    },
+    "stopLoss": 3547.4,
+    "takeProfit1": 3925.27,
+    "takeProfit2": 4076.41,
+    "riskRewardRatio": 2,
+    "riskReward": 2,
+    "aiConfidence": 96,
+    "confidenceScore": 96,
+    "confidenceBreakdown": {
+      "htfAlignment": 10,
+      "marketStructure": 20,
+      "entryConfirmation": 15,
+      "momentumAlignment": 10,
+      "liquidityCondition": 10,
+      "srClearance": 5,
+      "volatilitySuitability": 10,
+      "riskRewardRatio": 8,
+      "strategyAgreement": 8,
+      "conflictingPenalty": 0,
+      "totalScore": 96
+    },
+    "marketBias": "BULLISH",
+    "marketRegime": {
+      "regime": "TRENDING_BULLISH",
+      "confidence": 95,
+      "description": "Sustained bullish trend. Strong positive EMA cascade (Price > EMA20 > EMA50 > EMA200) with ascending slope (+0.173%/bar).",
+      "adxOrTrendSlope": 0.1733,
+      "atrPercent": 0.47,
+      "rangeWidthPercent": 3.507,
+      "primaryCharacteristic": "Bullish Directional Order Flow"
+    },
+    "strategyResults": [
+      {
+        "strategyName": "TREND_FOLLOWING",
+        "direction": "BUY",
+        "valid": true,
+        "strength": 90,
+        "timeframe": "H4",
+        "reason": "Price (3673.3567) is aligned with bullish moving average hierarchy (EMA 20/50/200). Trend strength: 90/100.",
+        "conditions": [
+          "Bullish Multi-EMA Cascade Active",
+          "High Positive EMA Velocity"
+        ],
+        "entryZone": {
+          "low": 3615.4005,
+          "high": 3673.35668
+        },
+        "invalidationLevel": 3550.18111
+      },
+      {
+        "strategyName": "BREAKOUT",
+        "direction": "NONE",
+        "valid": false,
+        "strength": 0,
+        "timeframe": "H1",
+        "reason": "Price remains within 20-period range [3556.0407 - 3680.2591]. No breakout confirmed.",
+        "conditions": []
+      },
+      {
+        "strategyName": "PULLBACK",
+        "direction": "NONE",
+        "valid": false,
+        "strength": 0,
+        "timeframe": "H1",
+        "reason": "Price is not currently retesting any major dynamic EMA or Fibonacci retracement zone.",
+        "conditions": []
+      },
+      {
+        "strategyName": "SUPPORT_RESISTANCE",
+        "direction": "NONE",
+        "valid": false,
+        "strength": 0,
+        "timeframe": "H4",
+        "reason": "Current price (3673.3567) is floating in mid-range between nearest S1 and R1 levels.",
+        "conditions": [
+          "Equilibrium (Mid-Range Oscillation)"
+        ]
+      },
+      {
+        "strategyName": "LIQUIDITY_SWEEP",
+        "direction": "BUY",
+        "valid": true,
+        "strength": 88,
+        "timeframe": "H1",
+        "reason": "Bullish Liquidity Sweep: Sell-side stops purged below 3556.0407. Price reclaimed level with strong buying absorption.",
+        "conditions": [
+          "Sell-side liquidity grab confirmed below 3556.0407",
+          "Immediate reclamation and structural closure back inside range",
+          "High-volume rejection wick confirmed"
+        ],
+        "entryZone": {
+          "low": 3556.04072,
+          "high": 3673.35668
+        },
+        "invalidationLevel": 3548.92863856
+      }
+    ],
+    "confluence": {
+      "overallConfluence": "HIGH",
+      "aggregateScore": 96,
+      "evidence": [
+        {
+          "source": "Intermediate Trend (Swing (H1/H4))",
+          "classification": "SUPPORT",
+          "bias": "BULLISH",
+          "weight": 10,
+          "detail": "H1 bias confirms BULLISH, though higher timeframe H4 is NEUTRAL."
+        },
+        {
+          "source": "Market Structure Order Flow",
+          "classification": "STRONG_SUPPORT",
+          "bias": "BULLISH",
+          "weight": 20,
+          "detail": "Confirmed Break of Structure (BOS) in direction of BULLISH order flow series."
+        },
+        {
+          "source": "Multi-Strategy Trigger Confirmation",
+          "classification": "STRONG_SUPPORT",
+          "bias": "BULLISH",
+          "weight": 15,
+          "detail": "Multiple independent triggers active (TREND_FOLLOWING, LIQUIDITY_SWEEP)."
+        },
+        {
+          "source": "Momentum Alignment",
+          "classification": "SUPPORT",
+          "bias": "BULLISH",
+          "weight": 10,
+          "detail": "Bullish momentum acceleration. RSI at 77.1, MACD histogram green (+8.7776) with positive ROC (+1.11%)."
+        },
+        {
+          "source": "Liquidity Purge & Absorption",
+          "classification": "STRONG_SUPPORT",
+          "bias": "BULLISH",
+          "weight": 10,
+          "detail": "Bullish Liquidity Sweep: Sell-side stops purged below 3556.0407. Price reclaimed level with strong buying absorption."
+        },
+        {
+          "source": "Volatility Regime",
+          "classification": "SUPPORT",
+          "bias": "NEUTRAL",
+          "weight": 10,
+          "detail": "Healthy, normal volatility regime (ATR 17.2792, 0.47% of price)."
+        }
+      ],
+      "dominantBias": "BULLISH",
+      "supportingCount": 6,
+      "conflictingCount": 0
+    },
+    "reasons": [
+      "Bullish multi-timeframe order flow and structure confluence confirmed.",
+      "[TREND_FOLLOWING] Price (3673.3567) is aligned with bullish moving average hierarchy (EMA 20/50/200). Trend strength: 90/100.",
+      "[LIQUIDITY_SWEEP] Bullish Liquidity Sweep: Sell-side stops purged below 3556.0407. Price reclaimed level with strong buying absorption."
+    ],
+    "setupExplanation": "XAU/USD exhibits strong H4 and H1 bullish swing alignment confirmed by a bullish multi-EMA cascade (EMA 20 at 3615.4005 above EMA 50 at 3583.0993 and EMA 200 at 3550.1811), positive MACD histogram momentum at 8.77762, and a validated bullish Break of Structure at 3585.51. Following the purge of sell-side liquidity, institutional order flow supports multi-session upside continuation under TRENDING_BULLISH volatility. However, with current price at 3673.35668 and RSI elevated at 77.1 signaling overbought exhaustion, H1 execution favors waiting for a controlled retracement rather than chasing extended highs.",
+    "conditionsDetected": [
+      "Trend Following: Bullish Multi-EMA Cascade",
+      "Market Structure: Bullish Break of Structure (BOS)",
+      "Liquidity Sweep: Sell-Side Liquidity Purged",
+      "Momentum: Overbought Divergence / Exhaustion"
+    ],
+    "invalidationCondition": "A decisive H4 candle close below the prior bullish Break of Structure level at 3585.51 and below EMA 50 at 3583.0993, invalidating the bullish swing structure.",
+    "invalidation": "A decisive H4 candle close below the prior bullish Break of Structure level at 3585.51 and below EMA 50 at 3583.0993, invalidating the bullish swing structure.",
+    "status": "ACTIVE",
+    "timeframeUsed": {
+      "context": "H4",
+      "entry": "H1"
+    },
+    "confidenceFactors": [
+      {
+        "name": "Intermediate Trend (Swing (H1/H4))",
+        "category": "SUPPORT",
+        "weight": 10,
+        "score": 80,
+        "detail": "H1 bias confirms BULLISH, though higher timeframe H4 is NEUTRAL."
+      },
+      {
+        "name": "Market Structure Order Flow",
+        "category": "STRONG_SUPPORT",
+        "weight": 20,
+        "score": 100,
+        "detail": "Confirmed Break of Structure (BOS) in direction of BULLISH order flow series."
+      },
+      {
+        "name": "Multi-Strategy Trigger Confirmation",
+        "category": "STRONG_SUPPORT",
+        "weight": 15,
+        "score": 100,
+        "detail": "Multiple independent triggers active (TREND_FOLLOWING, LIQUIDITY_SWEEP)."
+      },
+      {
+        "name": "Momentum Alignment",
+        "category": "SUPPORT",
+        "weight": 10,
+        "score": 80,
+        "detail": "Bullish momentum acceleration. RSI at 77.1, MACD histogram green (+8.7776) with positive ROC (+1.11%)."
+      },
+      {
+        "name": "Liquidity Purge & Absorption",
+        "category": "STRONG_SUPPORT",
+        "weight": 10,
+        "score": 100,
+        "detail": "Bullish Liquidity Sweep: Sell-side stops purged below 3556.0407. Price reclaimed level with strong buying absorption."
+      },
+      {
+        "name": "Volatility Regime",
+        "category": "SUPPORT",
+        "weight": 10,
+        "score": 80,
+        "detail": "Healthy, normal volatility regime (ATR 17.2792, 0.47% of price)."
+      }
+    ],
+    "strategyBreakdown": {
+      "trendFollowing": true,
+      "breakout": false,
+      "pullback": false,
+      "supportResistance": false,
+      "marketStructure": true,
+      "liquiditySweep": true,
+      "momentum": true,
+      "volatility": true,
+      "mtfConfluence": false
+    },
+    "newsRisk": {
+      "symbol": "XAU/USD",
+      "riskLevel": "UNKNOWN",
+      "notes": "No high-impact economic news embargo active for this instrument.",
+      "timestamp": 1795773649693
+    }
   }
 ]

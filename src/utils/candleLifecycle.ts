@@ -120,16 +120,16 @@ export function mergeCandleUpdates(
 ): MarketCandle[] {
   const candleMap = new Map<number, MarketCandle>();
 
-  // 1. Ingest existing valid candles
+  // 1. Ingest existing valid candles matching timeframe
   for (const c of existing) {
-    if (validateCandle(c, syncTime + 60_000)) {
+    if ((!c.timeframe || c.timeframe === timeframe) && validateCandle(c, syncTime + 60_000)) {
       candleMap.set(c.time, { ...c });
     }
   }
 
-  // 2. Ingest incoming valid candles
+  // 2. Ingest incoming valid candles matching timeframe
   for (const c of incoming) {
-    if (validateCandle(c, syncTime + 60_000)) {
+    if ((!c.timeframe || c.timeframe === timeframe) && validateCandle(c, syncTime + 60_000)) {
       candleMap.set(c.time, { ...c });
     }
   }
@@ -139,4 +139,72 @@ export function mergeCandleUpdates(
 
   // 4. Return valid series (clamped to max 500 candles for performance)
   return sorted.slice(-500);
+}
+
+/**
+ * Updates the active forming candle with a genuine market quote without mutating past closed bars
+ * or fabricating candles across market-closed gaps.
+ */
+export function applyLiveQuoteToCandles(
+  candles: MarketCandle[],
+  quote: { price: number; timestamp?: number; status?: string; marketStatus?: string } | null | undefined,
+  timeframe: Timeframe,
+  now: number = Date.now()
+): MarketCandle[] {
+  if (!Array.isArray(candles) || candles.length === 0) {
+    return candles;
+  }
+
+  if (
+    !quote ||
+    !Number.isFinite(quote.price) ||
+    quote.price <= 0 ||
+    quote.status === 'UNAVAILABLE' ||
+    quote.status === 'ERROR'
+  ) {
+    return candles;
+  }
+
+  const tfMs = TIMEFRAME_MS[timeframe] || TIMEFRAME_MS.M15;
+  const quoteTime = quote.timestamp && quote.timestamp > 0 ? quote.timestamp : now;
+  const quoteBucket = Math.floor(quoteTime / tfMs) * tfMs;
+
+  const next = candles.map((c) => ({ ...c }));
+  const lastIdx = next.length - 1;
+  const lastCandle = next[lastIdx];
+  const lastBucket = Math.floor(lastCandle.time / tfMs) * tfMs;
+
+  if (quoteBucket === lastBucket) {
+    next[lastIdx] = {
+      ...lastCandle,
+      high: Math.max(lastCandle.high, quote.price),
+      low: Math.min(lastCandle.low, quote.price),
+      close: quote.price,
+    };
+    return next;
+  }
+
+  if (
+    quoteBucket === lastBucket + tfMs &&
+    quote.status === 'LIVE' &&
+    quote.marketStatus === 'OPEN'
+  ) {
+    const openPrice = lastCandle.close > 0 ? lastCandle.close : quote.price;
+    next.push({
+      time: quoteBucket,
+      timestamp: quoteBucket,
+      datetime: new Date(quoteBucket).toISOString(),
+      open: openPrice,
+      high: Math.max(openPrice, quote.price),
+      low: Math.min(openPrice, quote.price),
+      close: quote.price,
+      volume: 0,
+      symbol: lastCandle.symbol,
+      timeframe,
+      source: `${lastCandle.source || 'Live'} (Tick)`,
+    });
+    return next.slice(-500);
+  }
+
+  return candles;
 }

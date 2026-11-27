@@ -40,6 +40,7 @@ export class TwelveDataProvider implements MarketDataProvider {
   // In-flight request deduplication map
   private inFlightQuotes = new Map<string, Promise<MarketPrice>>();
   private inFlightCandles = new Map<string, Promise<MarketCandle[]>>();
+  private unsupportedSymbols = new Map<string, number>();
 
   // Rate limit tracking for Twelve Data free tier: 8 / min, 800 / day
   private requestTimestamps: number[] = [];
@@ -133,8 +134,10 @@ export class TwelveDataProvider implements MarketDataProvider {
     this.requestTimestamps = this.requestTimestamps.filter((t) => now - t < 60000);
 
     if (this.requestTimestamps.length >= this.MINUTE_LIMIT) {
+      const oldestInWindow = this.requestTimestamps[0] || now;
+      const waitUntilWindowClears = Math.max(now + 5000, oldestInWindow + 60500);
       this.isRateLimited = true;
-      this.rateLimitCooldownUntil = now + 15 * 1000; // brief 15s wait for sliding window
+      this.rateLimitCooldownUntil = Math.min(now + 30000, waitUntilWindowClears);
       return {
         allowed: false,
         reason: 'Rate limit threshold reached (8 req/min). Using cache.',
@@ -197,6 +200,7 @@ export class TwelveDataProvider implements MarketDataProvider {
     this.rateLimitCooldownUntil = 0;
     this.consecutiveFailures = 0;
     this.requestTimestamps = [];
+    this.unsupportedSymbols.clear();
     this.state = 'CONNECTING';
     console.log('[TwelveDataProvider] Cooldown manually reset.');
   }
@@ -348,6 +352,15 @@ export class TwelveDataProvider implements MarketDataProvider {
   }
 
   /**
+   * Returns current minute request usage count (for quota-aware scheduling)
+   */
+  public getMinuteRequestCount(): number {
+    const now = Date.now();
+    this.requestTimestamps = this.requestTimestamps.filter((t) => now - t < 60000);
+    return this.requestTimestamps.length;
+  }
+
+  /**
    * Retrieves current market price quote with caching and deduplication.
    */
   public async getQuote(asset: Asset): Promise<MarketPrice> {
@@ -355,8 +368,11 @@ export class TwelveDataProvider implements MarketDataProvider {
     const cached = this.quoteCache.get(cacheKey);
     const now = Date.now();
 
-    // Return fresh cache if within 25s TTL
-    if (cached && now - cached.timestamp < cached.ttlMs && cached.data.price > 0) {
+    // Dynamic TTL: 10s when quota headroom is plentiful, 25s when busy
+    const recentUsage = this.getMinuteRequestCount();
+    const dynamicTtl = recentUsage >= 5 ? 25000 : 10000;
+
+    if (cached && now - cached.timestamp < Math.min(cached.ttlMs, dynamicTtl) && cached.data.price > 0) {
       return cached.data;
     }
 
@@ -374,7 +390,7 @@ export class TwelveDataProvider implements MarketDataProvider {
         this.quoteCache.set(cacheKey, {
           data: result,
           timestamp: Date.now(),
-          ttlMs: 30000,
+          ttlMs: 25000,
         });
       } else if (cached?.data && cached.data.price > 0) {
         return {
@@ -416,6 +432,26 @@ export class TwelveDataProvider implements MarketDataProvider {
       };
     }
 
+    const unsupportedUntil = this.unsupportedSymbols.get(asset.symbol);
+    if (unsupportedUntil && Date.now() < unsupportedUntil) {
+      return {
+        symbol: asset.symbol,
+        displayName: asset.displayName,
+        assetClass: asset.assetClass,
+        price: 0,
+        high24h: 0,
+        low24h: 0,
+        change24h: 0,
+        changePercent24h: 0,
+        timestamp: Date.now(),
+        lastUpdate: new Date().toISOString(),
+        marketStatus,
+        dataSource: 'Twelve Data',
+        status: 'UNAVAILABLE',
+        errorMessage: 'UNSUPPORTED_SYMBOL: Symbol not available on current provider plan',
+      };
+    }
+
     const rateCheck = this.checkRateLimit();
     if (!rateCheck.allowed) {
       if (previousQuote && previousQuote.price > 0) {
@@ -449,7 +485,7 @@ export class TwelveDataProvider implements MarketDataProvider {
 
       const apiKey = this.getApiKey();
       const querySymbol = asset.providerSymbol || asset.symbol;
-      const url = `${this.baseUrl}/quote?symbol=${encodeURIComponent(querySymbol)}&apikey=${encodeURIComponent(
+      const url = `${this.baseUrl}/quote?symbol=${encodeURIComponent(querySymbol)}&timezone=UTC&apikey=${encodeURIComponent(
         apiKey
       )}`;
 
@@ -511,6 +547,34 @@ export class TwelveDataProvider implements MarketDataProvider {
         };
       }
 
+      if (res.status === 400 || res.status === 404) {
+        let errMessage = `HTTP ${res.status}`;
+        try {
+          const errJson = await res.json();
+          if (errJson?.message) errMessage = errJson.message;
+        } catch {
+          // ignore body parse failure
+        }
+        this.unsupportedSymbols.set(asset.symbol, Date.now() + 10 * 60 * 1000);
+        this.logProviderError(res.status, 'UNSUPPORTED_SYMBOL', errMessage);
+        return {
+          symbol: asset.symbol,
+          displayName: asset.displayName,
+          assetClass: asset.assetClass,
+          price: 0,
+          high24h: 0,
+          low24h: 0,
+          change24h: 0,
+          changePercent24h: 0,
+          timestamp: Date.now(),
+          lastUpdate: new Date().toISOString(),
+          marketStatus,
+          dataSource: 'Twelve Data',
+          status: 'UNAVAILABLE',
+          errorMessage: `UNSUPPORTED_SYMBOL: ${errMessage}`,
+        };
+      }
+
       if (!res.ok) {
         this.handleTransientFailure(res.status, 'SERVER_ERROR', `HTTP ${res.status}`);
         throw new Error(`Twelve Data returned status ${res.status}`);
@@ -561,6 +625,7 @@ export class TwelveDataProvider implements MarketDataProvider {
         }
 
         // Unsupported symbol error - do NOT put provider in cooldown!
+        this.unsupportedSymbols.set(asset.symbol, Date.now() + 10 * 60 * 1000);
         this.logProviderError(data.code || 400, 'UNSUPPORTED_SYMBOL', data.message);
         return {
           symbol: asset.symbol,
@@ -576,7 +641,7 @@ export class TwelveDataProvider implements MarketDataProvider {
           marketStatus,
           dataSource: 'Twelve Data',
           status: 'UNAVAILABLE',
-          errorMessage: data.message || 'SYMBOL NOT FOUND ON PROVIDER',
+          errorMessage: `UNSUPPORTED_SYMBOL: ${data.message || 'SYMBOL NOT FOUND ON PROVIDER'}`,
         };
       }
 
@@ -690,14 +755,29 @@ export class TwelveDataProvider implements MarketDataProvider {
 
     const ttlMs =
       timeframe === 'M5'
-        ? 30000
+        ? 25000
         : timeframe === 'M15'
-        ? 60000
+        ? 45000
         : timeframe === 'H1'
-        ? 180000
-        : 300000;
+        ? 120000
+        : 240000;
 
-    if (cached && now - cached.timestamp < cached.ttlMs && cached.data.length >= 10) {
+    // Also invalidate cache immediately when a new timeframe bar boundary has opened since last cache write
+    const tfDurationMs =
+      timeframe === 'M5'
+        ? 300000
+        : timeframe === 'M15'
+        ? 900000
+        : timeframe === 'H1'
+        ? 3600000
+        : timeframe === 'H4'
+        ? 14400000
+        : 86400000;
+    const crossedBoundary = cached
+      ? Math.floor(now / tfDurationMs) !== Math.floor(cached.timestamp / tfDurationMs)
+      : false;
+
+    if (cached && !crossedBoundary && now - cached.timestamp < cached.ttlMs && cached.data.length >= 10) {
       return cached.data;
     }
 
@@ -748,12 +828,18 @@ export class TwelveDataProvider implements MarketDataProvider {
       )}&interval=${encodeURIComponent(interval)}&outputsize=${Math.min(
         150,
         Math.max(30, numberOfCandles)
-      )}&apikey=${encodeURIComponent(apiKey)}`;
+      )}&timezone=UTC&order=ASC&apikey=${encodeURIComponent(apiKey)}`;
 
       const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
 
       if (res.status === 429) {
         this.handleRateLimitHit('HTTP 429 on candles request');
+        return previousCandles || [];
+      }
+
+      if (res.status === 400 || res.status === 404) {
+        this.unsupportedSymbols.set(asset.symbol, Date.now() + 10 * 60 * 1000);
+        this.logProviderError(res.status, 'UNSUPPORTED_SYMBOL', `HTTP ${res.status} on candles`);
         return previousCandles || [];
       }
 

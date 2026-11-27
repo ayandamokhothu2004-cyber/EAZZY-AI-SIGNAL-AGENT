@@ -7,6 +7,7 @@ import {
   AssetClass,
   MarketCandle,
   MarketPrice,
+  MarketQuote,
   Timeframe,
   ProviderStatusInfo,
   SingleProviderStatus,
@@ -15,6 +16,7 @@ import {
   EngineStatus,
   ConnectionStatus,
   ProviderState,
+  DataSyncState,
 } from '../../src/types';
 import {
   SUPPORTED_ASSETS,
@@ -59,6 +61,9 @@ export class MarketDataManager {
   private inFlightQuotes = new Map<string, Promise<MarketPrice>>();
   private cachedQuotes = new Map<string, { quote: MarketPrice; timestamp: number }>();
   private readonly QUOTE_CACHE_TTL_MS = 3000; // 3-second cache TTL
+  private overviewCache: { data: Record<string, MarketPrice>; timestamp: number } | null = null;
+  private inFlightOverview: Promise<Record<string, MarketPrice>> | null = null;
+  private readonly OVERVIEW_CACHE_TTL_MS = 20000;
 
   constructor() {
     this.primaryProvider = new TwelveDataProvider();
@@ -96,6 +101,8 @@ export class MarketDataManager {
     this.activeConflictMap.clear();
     this.inFlightQuotes.clear();
     this.cachedQuotes.clear();
+    this.overviewCache = null;
+    this.inFlightOverview = null;
     this.primaryProvider.resetCooldown();
     this.secondaryProvider.resetCooldown();
   }
@@ -328,8 +335,12 @@ export class MarketDataManager {
     }
 
     // STEP 2: Initiate Failover to Finnhub
-    // Apply short exponential backoff for Twelve Data (5s, 10s, 20s, 30s, 60s max)
-    if (!isTwelveDataCoolingDown) {
+    // Apply global primary cooldown ONLY for provider-level errors (exceptions, 5xx, rate limits),
+    // NOT for single-symbol restrictions (e.g. UNSUPPORTED_SYMBOL on a free plan)
+    const isSymbolRestriction =
+      primaryQuote?.status === 'UNAVAILABLE' &&
+      (primaryQuote.errorMessage || '').includes('UNSUPPORTED_SYMBOL');
+    if (!isTwelveDataCoolingDown && !isSymbolRestriction) {
       this.primaryFailureCount++;
       const backoffSec = Math.min(60, Math.max(5, 5 * Math.pow(2, this.primaryFailureCount - 1)));
       this.primaryCooldownUntil = now + backoffSec * 1000;
@@ -420,38 +431,192 @@ export class MarketDataManager {
   }
 
   /**
-   * Retrieves market overview for all configured instruments.
+   * Synchronizes the current forming candle with the latest genuine market quote.
+   * Never alters historical closed bars or fabricates missing bars across gaps.
+   */
+  public synchronizeFormingCandle(
+    candles: MarketCandle[],
+    quote: MarketPrice | MarketQuote | undefined,
+    timeframe: Timeframe,
+    now: number = Date.now()
+  ): MarketCandle[] {
+    if (!Array.isArray(candles) || candles.length === 0) {
+      return [];
+    }
+
+    const cloned = candles.map((c) => ({ ...c }));
+    if (
+      !quote ||
+      !Number.isFinite(quote.price) ||
+      quote.price <= 0 ||
+      quote.status === 'UNAVAILABLE' ||
+      quote.status === 'ERROR' ||
+      quote.status === ('UNCONFIGURED' as any)
+    ) {
+      return cloned;
+    }
+
+    const tfMs = TIMEFRAME_DURATIONS_MS[timeframe] || TIMEFRAME_DURATIONS_MS.M15;
+    const quoteTime = quote.timestamp && quote.timestamp > 0 ? quote.timestamp : now;
+    const quoteBucket = Math.floor(quoteTime / tfMs) * tfMs;
+
+    const lastIdx = cloned.length - 1;
+    const lastCandle = cloned[lastIdx];
+    const lastBucket = Math.floor(lastCandle.time / tfMs) * tfMs;
+
+    if (quoteBucket === lastBucket) {
+      // Live update within current active bar
+      cloned[lastIdx] = {
+        ...lastCandle,
+        high: Math.max(lastCandle.high, quote.price),
+        low: Math.min(lastCandle.low, quote.price),
+        close: quote.price,
+      };
+    } else if (
+      quoteBucket === lastBucket + tfMs &&
+      quote.status === 'LIVE' &&
+      quote.marketStatus === 'OPEN'
+    ) {
+      // Quote just entered the immediately following forming bar while provider bar roll is pending
+      const openPrice = lastCandle.close > 0 ? lastCandle.close : quote.price;
+      cloned.push({
+        time: quoteBucket,
+        timestamp: quoteBucket,
+        datetime: new Date(quoteBucket).toISOString(),
+        open: openPrice,
+        high: Math.max(openPrice, quote.price),
+        low: Math.min(openPrice, quote.price),
+        close: quote.price,
+        volume: 0,
+        symbol: lastCandle.symbol,
+        timeframe,
+        source: `${lastCandle.source || 'Twelve Data'} (Live Tick)`,
+      });
+    }
+
+    return cloned;
+  }
+
+  /**
+   * Derives transparent live/delayed/historical/disconnected status for UI indicators.
+   */
+  public deriveDataSyncState(
+    quote: MarketPrice | MarketQuote | undefined,
+    candles: MarketCandle[],
+    timeframe: Timeframe,
+    now: number = Date.now()
+  ): DataSyncState {
+    if (
+      !quote ||
+      quote.price <= 0 ||
+      quote.status === 'UNAVAILABLE' ||
+      quote.status === 'ERROR' ||
+      quote.status === ('UNCONFIGURED' as any) ||
+      candles.length === 0
+    ) {
+      return 'DISCONNECTED';
+    }
+
+    if (quote.marketStatus === 'WEEKEND' || quote.marketStatus === 'CLOSED') {
+      return 'HISTORICAL';
+    }
+
+    if (
+      quote.status === 'STALE' ||
+      quote.status === 'RATE_LIMITED' ||
+      quote.status === 'DATA_CONFLICT'
+    ) {
+      return 'DELAYED';
+    }
+
+    const tfMs = TIMEFRAME_DURATIONS_MS[timeframe] || TIMEFRAME_DURATIONS_MS.M15;
+    const latestCandle = candles[candles.length - 1];
+    const quoteAgeMs = Math.max(0, now - (quote.timestamp || now));
+    const candleLagMs = Math.max(0, now - latestCandle.time);
+
+    if (quoteAgeMs > 120_000) {
+      return 'DELAYED';
+    }
+
+    if (candleLagMs > tfMs * 3) {
+      return 'DELAYED';
+    }
+
+    return 'LIVE';
+  }
+
+  /**
+   * Retrieves market overview for all configured instruments without exhausting Twelve Data 8/min quota.
    */
   public async getMarketOverview(): Promise<Record<string, MarketPrice>> {
-    const assets = this.getSupportedAssets();
-    const results: Record<string, MarketPrice> = {};
+    const now = Date.now();
+    if (this.overviewCache && now - this.overviewCache.timestamp < this.OVERVIEW_CACHE_TTL_MS) {
+      return this.overviewCache.data;
+    }
 
-    const promises = assets.map(async (asset) => {
-      try {
-        const quote = await this.getQuote(asset.symbol);
-        results[asset.symbol] = quote;
-      } catch (err: any) {
-        results[asset.symbol] = {
-          symbol: asset.symbol,
-          displayName: asset.displayName,
-          assetClass: asset.assetClass,
-          price: 0,
-          high24h: 0,
-          low24h: 0,
-          change24h: 0,
-          changePercent24h: 0,
-          timestamp: Date.now(),
-          lastUpdate: new Date().toISOString(),
-          marketStatus: getAssetMarketStatus(asset.assetClass),
-          dataSource: 'None',
-          status: 'ERROR',
-          errorMessage: err.message,
-        };
-      }
-    });
+    if (this.inFlightOverview) {
+      return this.inFlightOverview;
+    }
 
-    await Promise.all(promises);
-    return results;
+    const runOverview = async (): Promise<Record<string, MarketPrice>> => {
+      const assets = this.getSupportedAssets();
+      const results: Record<string, MarketPrice> = {};
+
+      // Route Crypto + US ETF Indices to Finnhub during bulk overview when configured
+      // to preserve Twelve Data's strict 8 req/min quota for Forex, XAU/USD, XAG/USD & candlesticks.
+      const finnhubBulkClasses = new Set<AssetClass>(['CRYPTO', 'INDICES', 'STOCKS']);
+
+      const promises = assets.map(async (asset) => {
+        try {
+          let quote: MarketPrice;
+          if (this.secondaryProvider.isConfigured && finnhubBulkClasses.has(asset.assetClass)) {
+            const fhQuote = await this.secondaryProvider.getQuote(asset);
+            if (fhQuote.price > 0 && fhQuote.status !== 'UNAVAILABLE') {
+              const rec = this.lastPricesBySymbol.get(asset.symbol) || {};
+              rec.finnhubPrice = fhQuote.price;
+              rec.finnhubTime = fhQuote.timestamp;
+              this.lastPricesBySymbol.set(asset.symbol, rec);
+              this.lastQuoteTimestamps.set(asset.symbol, fhQuote.timestamp || Date.now());
+              this.cachedQuotes.set(asset.symbol, { quote: fhQuote, timestamp: Date.now() });
+              quote = fhQuote;
+            } else {
+              quote = await this.getQuote(asset.symbol);
+            }
+          } else {
+            quote = await this.getQuote(asset.symbol);
+          }
+          results[asset.symbol] = quote;
+        } catch (err: any) {
+          results[asset.symbol] = {
+            symbol: asset.symbol,
+            displayName: asset.displayName,
+            assetClass: asset.assetClass,
+            price: 0,
+            high24h: 0,
+            low24h: 0,
+            change24h: 0,
+            changePercent24h: 0,
+            timestamp: Date.now(),
+            lastUpdate: new Date().toISOString(),
+            marketStatus: getAssetMarketStatus(asset.assetClass),
+            dataSource: 'None',
+            status: 'ERROR',
+            errorMessage: err.message,
+          };
+        }
+      });
+
+      await Promise.all(promises);
+      this.overviewCache = { data: results, timestamp: Date.now() };
+      return results;
+    };
+
+    this.inFlightOverview = runOverview();
+    try {
+      return await this.inFlightOverview;
+    } finally {
+      this.inFlightOverview = null;
+    }
   }
 
   /**
@@ -476,7 +641,8 @@ export class MarketDataManager {
   }
 
   /**
-   * Retrieves historical candles with Twelve Data -> Finnhub failover.
+   * Retrieves historical candles with Twelve Data -> Finnhub failover,
+   * then synchronizes the active forming candle with the genuine live quote.
    */
   public async getHistoricalCandles(
     symbol: string,
@@ -489,6 +655,8 @@ export class MarketDataManager {
     quote: MarketPrice;
     dataSource: string;
     status: string;
+    dataState: DataSyncState;
+    lastUpdated: number;
     errorMessage?: string;
   }> {
     const asset = getAssetConfig(symbol) || {
@@ -506,39 +674,30 @@ export class MarketDataManager {
     };
 
     const quote = await this.getQuote(symbol);
-
-    if (quote.status === 'UNAVAILABLE' && quote.price === 0) {
-      return {
-        symbol: asset.symbol,
-        timeframe,
-        candles: [],
-        quote,
-        dataSource: 'None',
-        status: 'UNAVAILABLE',
-        errorMessage: 'DATA NOT AVAILABLE FROM CURRENT PROVIDERS',
-      };
-    }
-
     const now = Date.now();
     const isTwelveDataCoolingDown = now < this.primaryCooldownUntil;
 
     // STEP 1: Attempt Primary Provider (Twelve Data) candles
     if (!isTwelveDataCoolingDown) {
       try {
-        const candles = await this.primaryProvider.getHistoricalCandles(
+        const rawCandles = await this.primaryProvider.getHistoricalCandles(
           asset,
           timeframe,
           numberOfCandles
         );
 
-        if (candles.length > 0) {
+        if (rawCandles.length > 0) {
+          const syncedCandles = this.synchronizeFormingCandle(rawCandles, quote, timeframe, now);
+          const dataState = this.deriveDataSyncState(quote, syncedCandles, timeframe, now);
           return {
             symbol: asset.symbol,
             timeframe,
-            candles,
+            candles: syncedCandles,
             quote,
             dataSource: 'Twelve Data',
             status: quote.status,
+            dataState,
+            lastUpdated: quote.timestamp || now,
           };
         }
       } catch (err: any) {
@@ -556,16 +715,20 @@ export class MarketDataManager {
         );
 
         if (finnCandles.length > 0) {
+          const syncedCandles = this.synchronizeFormingCandle(finnCandles, quote, timeframe, now);
+          const dataState = this.deriveDataSyncState(quote, syncedCandles, timeframe, now);
           console.log(
-            `[MARKET DATA] ${asset.symbol} Candles: Using Finnhub failover (${finnCandles.length} ${timeframe} candles).`
+            `[MARKET DATA] ${asset.symbol} Candles: Using Finnhub failover (${syncedCandles.length} ${timeframe} candles).`
           );
           return {
             symbol: asset.symbol,
             timeframe,
-            candles: finnCandles,
+            candles: syncedCandles,
             quote,
             dataSource: 'Finnhub (Failover)',
-            status: 'LIVE',
+            status: quote.status === 'UNAVAILABLE' ? 'STALE' : quote.status,
+            dataState,
+            lastUpdated: quote.timestamp || now,
           };
         }
       } catch (finnErr: any) {
@@ -573,15 +736,19 @@ export class MarketDataManager {
       }
     }
 
-    // STEP 3: No candles returned from either provider
+    // STEP 3: No candles returned from either provider (do NOT fabricate candles)
     return {
       symbol: asset.symbol,
       timeframe,
       candles: [],
       quote,
       dataSource: quote.dataSource || 'None',
-      status: 'NO_CANDLES',
-      errorMessage: `No historical candles returned for ${asset.symbol} on ${timeframe} from available providers`,
+      status: quote.status === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'NO_CANDLES',
+      dataState: 'DISCONNECTED',
+      lastUpdated: now,
+      errorMessage:
+        quote.errorMessage ||
+        `No historical candles returned for ${asset.symbol} on ${timeframe} from available providers`,
     };
   }
 
