@@ -5,6 +5,7 @@ import {
   PerformanceGroup,
   TradeType,
   SignalEvaluationLogEntry,
+  DailyPnlEntry,
 } from '../src/types';
 import { SignalStore, JournalQueryParams, PaginatedJournalResult, StorageStatus } from './signalStore';
 
@@ -870,6 +871,10 @@ export function calculatePerformanceAnalytics(): PerformanceAnalytics {
     BUY: initGroup(),
     SELL: initGroup(),
   };
+  const dailyBuckets: Record<
+    string,
+    { realizedR: number; wins: number; losses: number; trades: number; instruments: Set<string> }
+  > = {};
 
   let totalWins = 0;
   let totalLosses = 0;
@@ -908,6 +913,19 @@ export function calculatePerformanceAnalytics(): PerformanceAnalytics {
       totalExpired++;
     } else if (isCancelled || isInvalid) {
       totalCancelled++;
+    }
+
+    if (isWin || isLoss) {
+      const realizedTs = signal.closedAt || signal.timestamp || signal.createdAt || Date.now();
+      const dateStr = new Date(realizedTs).toISOString().slice(0, 10);
+      if (!dailyBuckets[dateStr]) {
+        dailyBuckets[dateStr] = { realizedR: 0, wins: 0, losses: 0, trades: 0, instruments: new Set<string>() };
+      }
+      dailyBuckets[dateStr].realizedR += rVal;
+      dailyBuckets[dateStr].trades += 1;
+      dailyBuckets[dateStr].instruments.add(signal.instrument.replace(/[/_ -]/g, '').toUpperCase());
+      if (isWin) dailyBuckets[dateStr].wins += 1;
+      if (isLoss) dailyBuckets[dateStr].losses += 1;
     }
 
     // Instrument grouping
@@ -992,6 +1010,30 @@ export function calculatePerformanceAnalytics(): PerformanceAnalytics {
     }
   }
 
+  let runningCumulativeR = 0;
+  const dailyPnl: DailyPnlEntry[] = Object.keys(dailyBuckets)
+    .sort((a, b) => a.localeCompare(b))
+    .map((date) => {
+      const bucket = dailyBuckets[date];
+      const realizedR = Number(bucket.realizedR.toFixed(2));
+      runningCumulativeR = Number((runningCumulativeR + realizedR).toFixed(2));
+      const label = new Date(`${date}T00:00:00Z`).toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        timeZone: 'UTC',
+      });
+      return {
+        date,
+        label,
+        realizedR,
+        cumulativeR: runningCumulativeR,
+        wins: bucket.wins,
+        losses: bucket.losses,
+        trades: bucket.trades,
+        instruments: Array.from(bucket.instruments),
+      };
+    });
+
   return {
     totalSignals: signalJournal.length,
     totalUniqueSignals: uniqueSignals.length,
@@ -1017,5 +1059,6 @@ export function calculatePerformanceAnalytics(): PerformanceAnalytics {
     byTradeType,
     byConfidenceBracket,
     byDirection,
+    dailyPnl,
   };
 }

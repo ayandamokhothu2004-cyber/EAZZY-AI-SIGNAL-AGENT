@@ -512,6 +512,17 @@ export interface PerformanceGroup {
   avgR: number;
 }
 
+export interface DailyPnlEntry {
+  date: string;
+  label: string;
+  realizedR: number;
+  cumulativeR: number;
+  wins: number;
+  losses: number;
+  trades: number;
+  instruments?: string[];
+}
+
 export interface PerformanceAnalytics {
   totalSignals: number;
   totalUniqueSignals: number;
@@ -547,6 +558,7 @@ export interface PerformanceAnalytics {
     BUY: PerformanceGroup;
     SELL: PerformanceGroup;
   };
+  dailyPnl: DailyPnlEntry[];
 }
 
 export interface SignalNotification {

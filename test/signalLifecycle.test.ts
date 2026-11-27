@@ -333,6 +333,9 @@ runTest(11, 'Performance Analytics Win Rate Calculation', () => {
   assert(stats.winRate === 66.7, `Expected win rate 66.7%, got ${stats.winRate}%`);
   // Total R = 2.0 + 3.2 - 1.0 = 4.2
   assert(stats.totalR === 4.2, `Expected totalR 4.2, got ${stats.totalR}`);
+  assert(Array.isArray(stats.dailyPnl) && stats.dailyPnl.length === 1, 'Expected 1 dailyPnl entry');
+  assert(stats.dailyPnl[0].realizedR === 4.2, `Expected daily realizedR 4.2, got ${stats.dailyPnl[0].realizedR}`);
+  assert(stats.dailyPnl[0].wins === 2 && stats.dailyPnl[0].losses === 1, 'Expected 2 wins and 1 loss in dailyPnl');
 });
 
 // Test 12: BUY Signal Hits TP2 Cleanly
